@@ -868,7 +868,7 @@ async function main() {
   console.log(`Berhasil: ${results.length}`);
   console.log(`PFS >= ${CFG.MIN_SCORE}: ${qualified.length}`);
   console.log(`Error: ${errors.length}`);
-  console.table(
+  console.table(errors.slice(0, 20));
     qualified.slice(0, 20).map((r) => ({
       RANK: r.rank,
       SAHAM: r.ticker,

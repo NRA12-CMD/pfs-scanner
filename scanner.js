@@ -630,29 +630,62 @@ async function fetchYahooHistory(symbol, lookbackDays = CFG.LOOKBACK_DAYS) {
     (Date.now() - lookbackDays * 24 * 60 * 60 * 1000) / 1000
   );
 
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
-    `?period1=${start}&period2=${end}&interval=1d&events=history&includeAdjustedClose=true`;
+  const hosts = [
+  "https://query1.finance.yahoo.com",
+  "https://query2.finance.yahoo.com"
+];
 
-  let lastError = null;
+let lastError = null;
+
+for (let hostIndex = 0; hostIndex < hosts.length; hostIndex++) {
+  const host = hosts[hostIndex];
+
   for (let attempt = 0; attempt <= CFG.RETRIES; attempt++) {
     try {
+      const url =
+        `${host}/v8/finance/chart/${encodeURIComponent(symbol)}` +
+        `?period1=${start}&period2=${end}` +
+        `&interval=1d&events=history&includeAdjustedClose=true`;
+
       const response = await fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Accept": "application/json" },
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/131.0.0.0 Safari/537.36",
+          "Accept": "application/json"
+        }
       });
+
       const body = await response.text();
 
       if (!response.ok) {
-        throw new Error(`Yahoo HTTP ${response.status}: ${body.slice(0, 180)}`);
+        throw new Error(
+          `Yahoo HTTP ${response.status}: ${body.slice(0, 180)}`
+        );
       }
 
-      return parseYahooHistoryBody(JSON.parse(body), symbol);
+      const json = JSON.parse(body);
+
+      if (
+        !json.chart ||
+        !json.chart.result ||
+        !json.chart.result.length
+      ) {
+        throw new Error("Yahoo mengembalikan data chart kosong");
+      }
+
+      return parseYahooHistoryBody(json, symbol);
+
     } catch (err) {
       lastError = err;
+
       if (attempt < CFG.RETRIES) {
         await sleep(CFG.RETRY_DELAY_MS * (attempt + 1));
       }
     }
+  }
+}
   }
 
   throw new Error(`${symbol}: ${lastError?.message || "Yahoo fetch gagal"}`);

@@ -1,0 +1,12 @@
+{
+  "name": "pfs-scanner",
+  "version": "1.0.0",
+  "description": "PFS Stock and Crypto Scanner",
+  "type": "module",
+  "scripts": {
+    "start": "node scanner.js"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}

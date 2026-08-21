@@ -789,7 +789,7 @@ async function main() {
   const fetched = await mapConcurrent(
     symbols,
     async (ticker, index) => {
-      const stock = await fetchYahooHistory(`${ticker}.JK`);
+     const stock = await fetchYahooHistory(ticker);
       console.log(`[${index + 1}/${symbols.length}] ${ticker} -> ${stock.length} candle`);
       return { ticker, stock };
     },

@@ -686,7 +686,7 @@ for (let hostIndex = 0; hostIndex < hosts.length; hostIndex++) {
     }
   }
 }
-}
+
 
   throw new Error(`${symbol}: ${lastError?.message || "Yahoo fetch gagal"}`);
 }

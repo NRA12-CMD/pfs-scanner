@@ -869,17 +869,19 @@ async function main() {
   console.log(`PFS >= ${CFG.MIN_SCORE}: ${qualified.length}`);
   console.log(`Error: ${errors.length}`);
   console.table(errors.slice(0, 20));
-    qualified.slice(0, 20).map((r) => ({
-      RANK: r.rank,
-      SAHAM: r.ticker,
-      PFS: r.score,
-      SIGNAL: r.signal,
-      VOL: r.volatility,
-      AKUM: r.accumulation,
-      RSR20: r.rsr20,
-      "VOL/AVG20": Number(r.volRatio).toFixed(2),
-    }))
-  );
+
+console.table(
+  qualified.slice(0, 20).map((r) => ({
+    RANK: r.rank,
+    SAHAM: r.ticker,
+    PFS: r.score,
+    SIGNAL: r.signal,
+    VOL: r.volatility,
+    AKUM: r.accumulation,
+    RSR20: r.rsr20,
+    "VOL/AVG20": Number(r.volRatio).toFixed(2),
+  }))
+);
 }
 
 main().catch((error) => {

@@ -1,0 +1,29 @@
+name: PFS V59 Screening
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "30 10 * * 1-5"
+
+jobs:
+  screening:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run PFS V59 Scanner
+        run: node scanner.js
+
+      - name: Upload hasil screening
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfs-screening-result
+          path: output/

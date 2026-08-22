@@ -1014,7 +1014,7 @@ function classifyBacktestClose(changePct) {
   // Kriteria 1: candle merah lebih dari -1% (close di bawah -1%).
   if (c < -1.0) return "MERAH: Close < -1%";
   // Kriteria 2: close harian nol atau positif.
-  if (c >= 0) return "CLOSE_>=_0%";
+  if (c > -1.0) return "CLOSE_>-1%";
   // Close antara -1% dan 0% tidak masuk kategori merah.
   return null;
 }
@@ -1118,8 +1118,8 @@ async function runBacktest(fetched, ihsg) {
     const avg=(a)=>a.length?average(a):null;
     return {signals:n,tp1Hit:tp1,tp1WinRate:n?tp1/n*100:0,tp2Hit:tp2,tp2WinRate:n?tp2/n*100:0,recovery:rec,recoveryRate:n?rec/n*100:0,failedRecovery:fail,failedRate:n?fail/n*100:0,averageDownTrades:ad.length,averageDownSuccess:adRec.length,averageDownSuccessRate:ad.length?adRec.length/ad.length*100:0,averageADCount:avg(ad.map(x=>x.adCount))??0,avgFinalReturnPct:n?average(rows.map(x=>x.finalReturnPct)):0,avgMaxGainPct:n?average(rows.map(x=>x.maxGainPct)):0,avgMaxDrawdownPct:n?average(rows.map(x=>x.maxDrawdownPct)):0,avgDaysToRecovery:avg(rows.filter(x=>Number.isFinite(x.daysToRecovery)).map(x=>x.daysToRecovery)),avgDaysToTP1:avg(rows.filter(x=>Number.isFinite(x.daysToTP1)).map(x=>x.daysToTP1)),avgDaysToTP2:avg(rows.filter(x=>Number.isFinite(x.daysToTP2)).map(x=>x.daysToTP2))};
   };
-  const criteria={"MERAH: Close < -1%":summarize(trades.filter(x=>x.criterion==='MERAH: Close < -1%')),"CLOSE_>=_0%":summarize(trades.filter(x=>x.criterion==='CLOSE_>=_0%')),ALL:summarize(trades)};
-  const byGrade={}; for(const grade of ['A+','A','B']) byGrade[grade]={"MERAH: Close < -1%":summarize(trades.filter(x=>x.entryGrade===grade&&x.criterion==='MERAH: Close < -1%')),"CLOSE_>=_0%":summarize(trades.filter(x=>x.entryGrade===grade&&x.criterion==='CLOSE_>=_0%'))};
+  const criteria={"MERAH: Close < -1%":summarize(trades.filter(x=>x.criterion==='MERAH: Close < -1%')),"CLOSE_>-1%":summarize(trades.filter(x=>x.criterion==='CLOSE_>-1%')),ALL:summarize(trades)};
+  const byGrade={}; for(const grade of ['A+','A','B']) byGrade[grade]={"MERAH: Close < -1%":summarize(trades.filter(x=>x.entryGrade===grade&&x.criterion==='MERAH: Close < -1%')),"CLOSE_>-1%":summarize(trades.filter(x=>x.entryGrade===grade&&x.criterion==='CLOSE_>-1%'))};
   const grouped={}; for(const t of trades)(grouped[t.ticker]??=[]).push(t);
   const stockSummary=Object.entries(grouped).map(([ticker,rows])=>({ticker,trades:rows.length,tp1Hit:rows.filter(x=>x.tp1Hit).length,recoveryTrades:rows.filter(x=>x.recoveryStatus==='RECOVERY'||x.recoveryStatus==='RECOVERY_TP2').length,averageDownTrades:rows.filter(x=>x.adCount>0).length,winRateTP1:rows.length?rows.filter(x=>x.tp1Hit).length/rows.length*100:0,recoveryRate:(()=>{const a=rows.filter(x=>x.adCount>0);return a.length?rows.filter(x=>x.adCount>0&&(x.recoveryStatus==='RECOVERY'||x.recoveryStatus==='RECOVERY_TP2')).length/a.length*100:0})(),avgReturnPct:average(rows.map(x=>x.finalReturnPct)),avgMaxDrawdownPct:average(rows.map(x=>x.maxDrawdownPct)),avgDaysToRecovery:(()=>{const a=rows.filter(x=>Number.isFinite(x.daysToRecovery)).map(x=>x.daysToRecovery);return a.length?average(a):null})(),avgDaysToTP1:(()=>{const a=rows.filter(x=>Number.isFinite(x.daysToTP1)).map(x=>x.daysToTP1);return a.length?average(a):null})(),avgDaysToTP2:(()=>{const a=rows.filter(x=>Number.isFinite(x.daysToTP2)).map(x=>x.daysToTP2);return a.length?average(a):null})()})).sort((a,b)=>b.avgReturnPct-a.avgReturnPct);
   await fs.mkdir('output',{recursive:true});
@@ -1231,7 +1231,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
   try {
     const result = await getBacktestDataAndRun();
     const red = result.criteria["MERAH: Close < -1%"];
-    const green = result.criteria["CLOSE_>=_0%"];
+    const green = result.criteria["CLOSE_>-1%"];
     const selected = mode === "red" ? red : mode === "green" ? green : null;
 
     let message = "🧪 BACKTEST SELESAI — V65 ADAPTIVE RECOVERY\n━━━━━━━━━━━━━━━━━━━━\n";
@@ -1374,7 +1374,7 @@ async function telegramBotOneShot() {
         const raw = await fs.readFile("output/backtest.json", "utf8");
         const data = JSON.parse(raw);
         const red = data.criteria["MERAH: Close < -1%"];
-        const green = data.criteria["CLOSE_>=_0%"];
+        const green = data.criteria["CLOSE_>-1%"];
         await sendTelegramTo(cmd.chatId,
           "📊 HASIL BACKTEST TERAKHIR\n━━━━━━━━━━━━━━━━━━━━\n" +
           formatBacktestCriterion("🔴 MERAH: Close < -1%", red) + "\n\n" +
@@ -1444,7 +1444,7 @@ async function telegramBotLoop() {
             const raw = await fs.readFile("output/backtest.json", "utf8");
             const data = JSON.parse(raw);
             const red = data.criteria["MERAH: Close < -1%"];
-            const green = data.criteria["CLOSE_>=_0%"];
+            const green = data.criteria["CLOSE_>-1%"];
             await sendTelegramTo(chatId,
               "📊 HASIL BACKTEST TERAKHIR\n━━━━━━━━━━━━━━━━━━━━\n" +
               formatBacktestCriterion("🔴 MERAH: Close < -1%", red) + "\n\n" +
@@ -1720,7 +1720,7 @@ async function main() {
 
   if (shouldRunBacktest && backtest) {
     const btRed = backtest.criteria["MERAH: Close < -1%"];
-    const btGreen = backtest.criteria["CLOSE_>=_0%"];
+    const btGreen = backtest.criteria["CLOSE_>-1%"];
     telegramText +=
       "\n🧪 BACKTEST V65 ADAPTIVE RECOVERY - 2 KRITERIA\n" +
       `Target : TP1 +${CFG.RECOVERY_TP1_PCT}% | TP2 +${CFG.RECOVERY_TP2_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
@@ -1742,7 +1742,7 @@ async function main() {
   console.log(`Error: ${errors.length}`);
   if (shouldRunBacktest && backtest) {
     console.log(`BACKTEST MERAH: Close < -1%"].tp1WinRate.toFixed(1)}%`);
-    console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>=_0%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>=_0%"].tp1WinRate.toFixed(1)}%`);
+    console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>-1%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>-1%"].tp1WinRate.toFixed(1)}%`);
   }
   console.table(
     qualified.slice(0, 20).map((r) => ({

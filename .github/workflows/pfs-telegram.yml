@@ -1,0 +1,48 @@
+name: PFS Telegram Controller
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pfs-telegram-controller
+  cancel-in-progress: false
+
+jobs:
+  telegram-controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Telegram controller
+        env:
+          TELEGRAM_ONESHOT: "1"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scanner.js
+
+      - name: Save Telegram state and backtest result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/
+          if git diff --cached --quiet; then
+            echo "Tidak ada perubahan yang perlu disimpan."
+          else
+            git commit -m "chore: update telegram controller state and backtest"
+            git push
+          fi

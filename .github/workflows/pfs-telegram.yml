@@ -2,47 +2,44 @@ name: PFS Telegram Controller
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
-
-permissions:
-  contents: write
-
-concurrency:
-  group: pfs-telegram-controller
-  cancel-in-progress: false
 
 jobs:
   telegram-controller:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Run Telegram controller
+      - name: Run Telegram controller / scanner
         env:
-          TELEGRAM_ONESHOT: "1"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ONESHOT: "1"
+          RUN_BACKTEST: "1"
         run: node scanner.js
 
-      - name: Save Telegram state and backtest result
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add output/
-          if git diff --cached --quiet; then
-            echo "Tidak ada perubahan yang perlu disimpan."
-          else
-            git commit -m "chore: update telegram controller state and backtest"
-            git push
-          fi
+      - name: Upload screening and backtest reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pfs-backtest-reports
+          path: |
+            output/backtest.json
+            output/backtest.csv
+            output/backtest_per_saham.csv
+            output/backtest_manual_verifikasi.txt
+            output/backtest_detail_per_saham.txt
+            output/screening.json
+            output/screening.csv
+            output/errors.json
+            output/telegram_offset.json
+          if-no-files-found: warn
+          retention-days: 7

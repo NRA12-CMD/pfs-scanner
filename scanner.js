@@ -1,4 +1,5 @@
-/ PFS Scanner V64 - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
+// PFS Scanner V64.1 - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
+// FIX V64.1: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
 //

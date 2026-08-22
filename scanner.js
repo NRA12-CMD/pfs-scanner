@@ -1,5 +1,5 @@
-// PFS Scanner V64.3 FAST 100D
-// PFS Scanner V64.2 FAST - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
+// PFS Scanner V64.3.1 FAST 100D - BACKTEST OUTPUT FIX
+// PFS Scanner V64.3.1 - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
@@ -1067,6 +1067,11 @@ function evaluateForwardOutcome(stock, entryIndex) {
 }
 
 async function runBacktest(fetched, ihsg) {
+  // FIX: pastikan folder output ada sebelum menulis hasil backtest.
+  // Sebelumnya writeFile("output/backtest.json") dipanggil saat folder belum dibuat,
+  // sehingga GitHub Actions gagal dengan ENOENT / no such file or directory.
+  await fs.mkdir("output", { recursive: true });
+
   const trades = [];
   const perStock = [];
 

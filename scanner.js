@@ -1,3 +1,4 @@
+// PFS Scanner V64.3 FAST 100D
 // PFS Scanner V64.2 FAST - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -48,7 +49,7 @@ async function sendTelegram(message) {
 }
 
 const CFG = {
-  LOOKBACK_DAYS: 500,
+  LOOKBACK_DAYS: 100,
   MIN_BARS: 80,
   MIN_SCORE: 62,
 

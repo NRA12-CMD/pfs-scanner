@@ -1,4 +1,4 @@
-// PFS Scanner V61.2 - PFS + EAS + Timing + Trend + Entry Decision
+// PFS Scanner V62 STRICT - PFS + EAS + Timing + Trend + Entry Decision
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
 //
@@ -6,7 +6,8 @@
 // - Market: IDX
 // - Timeframe: Daily 1D
 // - Lookback: 500 calendar days
-// - Minimum PFS: 62
+// - Base Minimum PFS: 62
+// - STRICT qualification: PFS + EAS + Timing + Trend + Entry Score + UPTREND
 // - Maximum displayed results: 50
 // - Source: Yahoo Finance chart endpoint
 //
@@ -49,6 +50,15 @@ const CFG = {
   LOOKBACK_DAYS: 500,
   MIN_BARS: 80,
   MIN_SCORE: 62,
+
+  // STRICT ENTRY FILTERS
+  QUALIFY_MIN_PFS: 75,
+  QUALIFY_MIN_EAS: 55,
+  QUALIFY_MIN_TREND: 60,
+  QUALIFY_MIN_TIMING: 55,
+  QUALIFY_MIN_ENTRY: 70,
+  REQUIRE_UPTREND: true,
+
   MAX_RESULTS: 50,
   DISPLAY_DAYS: 20,
   VOLATILITY_TOP_ATR_PCT: 5.50,
@@ -956,7 +966,7 @@ async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V61.2 PFS + EAS + TIMING + TREND + ENTRY Node.js`);
+  console.log(`PFS Scanner V62 STRICT PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`Universe    : ${symbols.length} saham`);
   console.log(`Max output  : ${CFG.MAX_RESULTS}`);
@@ -1063,22 +1073,35 @@ async function main() {
     }
   }
 
-  // PFS tetap menjadi fondasi; Entry Score menjadi tie-breaker utama berikutnya,
-  // lalu EAS. Dengan demikian ranking tetap stabil tetapi kandidat entry lebih terlihat.
-  results.sort(
-    (a, b) =>
-      b.score - a.score ||
-      b.entryScore - a.entryScore ||
-      b.earlyAccumulationScore - a.earlyAccumulationScore
-  );
+  // V62 STRICT: semua skor utama menjadi FILTER WAJIB, bukan sekadar ranking.
+  // PFS >= 75, EAS >= 55, Trend >= 60, Timing >= 55, Entry >= 70, dan UPTREND.
+  // Dengan demikian penambahan skor benar-benar mengurangi kandidat yang lolos.
+  const rejectedByStrictFilter = results.filter((r) => {
+    const passPFS = r.score >= CFG.QUALIFY_MIN_PFS;
+    const passEAS = r.earlyAccumulationScore >= CFG.QUALIFY_MIN_EAS;
+    const passTrend = r.trendScore >= CFG.QUALIFY_MIN_TREND;
+    const passTiming = r.timingScore >= CFG.QUALIFY_MIN_TIMING;
+    const passEntry = r.entryScore >= CFG.QUALIFY_MIN_ENTRY;
+    const passTrendQuality = !CFG.REQUIRE_UPTREND || r.trendQuality === "UPTREND";
+    return !(passPFS && passEAS && passTrend && passTiming && passEntry && passTrendQuality);
+  }).length;
 
-  // V61.2: minimum PFS 62 + ranking PFS + Entry Score + EAS + cap 50.
   const qualified = results
-    .filter((r) => r.score >= CFG.MIN_SCORE)
+    .filter((r) => {
+      const passPFS = r.score >= CFG.QUALIFY_MIN_PFS;
+      const passEAS = r.earlyAccumulationScore >= CFG.QUALIFY_MIN_EAS;
+      const passTrend = r.trendScore >= CFG.QUALIFY_MIN_TREND;
+      const passTiming = r.timingScore >= CFG.QUALIFY_MIN_TIMING;
+      const passEntry = r.entryScore >= CFG.QUALIFY_MIN_ENTRY;
+      const passTrendQuality = !CFG.REQUIRE_UPTREND || r.trendQuality === "UPTREND";
+      return passPFS && passEAS && passTrend && passTiming && passEntry && passTrendQuality;
+    })
     .sort(
       (a, b) =>
-        b.score - a.score ||
         b.entryScore - a.entryScore ||
+        b.score - a.score ||
+        b.trendScore - a.trendScore ||
+        b.timingScore - a.timingScore ||
         b.earlyAccumulationScore - a.earlyAccumulationScore
     )
     .slice(0, CFG.MAX_RESULTS);
@@ -1098,6 +1121,7 @@ async function main() {
       checked: symbols.length,
       successful: results.length,
       qualified: qualified.length,
+      rejectedByStrictFilter,
       errors: errors.length,
       results: qualified,
     }, null, 2)
@@ -1133,11 +1157,15 @@ async function main() {
   };
 
   let telegramText =
-    "📊 PFS SCREENING IDX\n" +
-    `Total saham : ${qualified.length}\n` +
-    `Minimum PFS : ${CFG.MIN_SCORE}\n` +
+    "📊 PFS SCREENING IDX - V62 STRICT\n" +
+    `Total LOLOS : ${qualified.length}\n` +
+    `Filter PFS  : >= ${CFG.QUALIFY_MIN_PFS}\n` +
+    `EAS/Timing  : >= ${CFG.QUALIFY_MIN_EAS} / >= ${CFG.QUALIFY_MIN_TIMING}\n` +
+    `Trend/Entry : >= ${CFG.QUALIFY_MIN_TREND} / >= ${CFG.QUALIFY_MIN_ENTRY}\n` +
+    `Trend wajib : ${CFG.REQUIRE_UPTREND ? "UPTREND" : "TIDAK"}\n` +
     `Dicek       : ${symbols.length}\n` +
     `Berhasil    : ${results.length}\n` +
+    `Ditolak     : ${rejectedByStrictFilter}\n` +
     `Error       : ${errors.length}\n` +
     "━━━━━━━━━━━━━━━━━━━━\n";
 
@@ -1186,7 +1214,7 @@ async function main() {
   console.log("");
   console.log(`Selesai. Dicek: ${symbols.length}`);
   console.log(`Berhasil: ${results.length}`);
-  console.log(`PFS >= ${CFG.MIN_SCORE}: ${qualified.length}`);
+  console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
   console.log(`Error: ${errors.length}`);
   console.table(
     qualified.slice(0, 20).map((r) => ({

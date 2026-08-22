@@ -1,5 +1,5 @@
-// PFS Scanner V66 HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
-// PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
+// PFS Scanner V67.4 HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V67.4 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
@@ -11,7 +11,7 @@
 // - Base Minimum PFS: 62
 // - STRICT qualification: PFS + EAS + Timing + Trend + Entry Score + UPTREND
 // - Maximum displayed results: 50
-// - V67.2: tidak ada filter perubahan harian Close +/- yang membatasi hasil scanner.
+// - V67.4: tidak ada filter perubahan harian Close +/- dan OHLC tidak menjadi syarat kelulusan.
 // - Source: Yahoo Finance chart endpoint
 //
 // Input:
@@ -76,15 +76,7 @@ const CFG = {
   HIGH_WINRATE_MIN_RSR20: 70,
   HIGH_WINRATE_MIN_VOL_RATIO: 1.20,
   HIGH_WINRATE_MIN_ACCUMULATION: 50,
-  // V67.2 OHLC HIGH WINRATE - NO CLOSE CHANGE FILTER
-  OHLC_MIN_SCORE: 80,
-  OHLC_STRONG_SCORE: 90,
-  OHLC_MIN_BODY_RATIO: 0.45,
-  OHLC_MIN_CLOSE_LOCATION: 0.70,
-  OHLC_MAX_UPPER_WICK_RATIO: 0.25,
-  OHLC_MAX_DISTANCE_EMA20_PCT: 8.0,
-  OHLC_REQUIRE_CLOSE_ABOVE_PREV_HIGH: false,
-  OHLC_REQUIRE_2DAY_CONFIRMATION: true,
+  // V67.4: OHLC tidak digunakan sebagai filter kelulusan.
   HIGH_WINRATE_MIN_VOLATILITY_LABEL: "SEDANG",
   HIGH_WINRATE_REQUIRE_MACD_POSITIVE: true,
   HIGH_WINRATE_REQUIRE_BULLISH_CANDLE: true,
@@ -1031,70 +1023,14 @@ function strictPassForBacktest(pfs, eas, trendScore, timingScore, entryScore, tr
   );
 }
 
-function calculateOHLCScore(stock) {
-  const last = stock.at(-1);
-  const prev = stock.at(-2);
-  if (!last || !prev) return { score: 0, label: "DATA_TIDAK_LENGKAP", reasons: ["DATA_TIDAK_LENGKAP"] };
-
-  const open = Number(last.open), high = Number(last.high), low = Number(last.low), close = Number(last.close);
-  const pClose = Number(prev.close), pHigh = Number(prev.high);
-  const range = high - low;
-  const body = Math.abs(close - open);
-  if (![open, high, low, close, pClose, pHigh].every(Number.isFinite) || range <= 0) {
-    return { score: 0, label: "DATA_TIDAK_LENGKAP", reasons: ["OHLC_INVALID"] };
-  }
-
-  const bodyRatio = body / range;
-  const closeLocation = (close - low) / range;
-  const upperWick = high - Math.max(open, close);
-  const lowerWick = Math.min(open, close) - low;
-  const upperWickRatio = Math.max(0, upperWick / range);
-  const lowerWickRatio = Math.max(0, lowerWick / range);
-  const bullish = close > open;
-  const higherClose = close > pClose;
-  const higherHigh = high >= pHigh;
-  const strongClose = closeLocation >= CFG.OHLC_MIN_CLOSE_LOCATION;
-  const goodBody = bullish && bodyRatio >= CFG.OHLC_MIN_BODY_RATIO;
-  const upperWickOK = upperWickRatio <= CFG.OHLC_MAX_UPPER_WICK_RATIO;
-  const lowerWickHealthy = lowerWickRatio <= 0.35 || (lowerWickRatio > 0.15 && closeLocation >= 0.75);
-
-  let score = 0;
-  const reasons = [];
-  if (bullish) { score += 20; reasons.push("BULLISH"); }
-  if (goodBody) { score += 20; reasons.push("BODY_KUAT"); }
-  else if (bullish && bodyRatio >= 0.30) score += 10;
-  if (strongClose) { score += 20; reasons.push("CLOSE_DEKAT_HIGH"); }
-  else if (closeLocation >= 0.60) score += 10;
-  if (upperWickOK) { score += 15; reasons.push("UPPER_WICK_TERKONTROL"); }
-  if (higherClose) { score += 10; reasons.push("CLOSE_NAIK"); }
-  if (higherHigh) { score += 5; reasons.push("HIGH_NAIK"); }
-  if (lowerWickHealthy) { score += 5; reasons.push("LOWER_WICK_SEHAT"); }
-
-  const prevRange = Number(prev.high) - Number(prev.low);
-  const prevBodyRatio = prevRange > 0 ? Math.abs(Number(prev.close) - Number(prev.open)) / prevRange : 0;
-  const prevBullish = Number(prev.close) >= Number(prev.open);
-  const prevNotWeak = prevBullish || prevBodyRatio < 0.65;
-  if (CFG.OHLC_REQUIRE_2DAY_CONFIRMATION && prevNotWeak) {
-    score += 5;
-    reasons.push("KONFIRMASI_2HARI");
-  }
-
-  score = Math.min(100, Math.round(score));
-  const label = score >= CFG.OHLC_STRONG_SCORE ? "OHLC SANGAT KUAT" :
-    score >= CFG.OHLC_MIN_SCORE ? "OHLC KUAT" :
-    score >= 70 ? "OHLC SEDANG" : "OHLC LEMAH";
-
-  return { score, label, reasons, bodyRatio, closeLocation, upperWickRatio, lowerWickRatio, bullish, higherClose, higherHigh };
-}
-
 function highWinratePass(stock, calc, s, eas, trendScore, timingScore, entry) {
   const x = calc.latest;
   const last = stock.at(-1);
   const prev = stock.at(-2);
-  if (!x || !last || !prev) return { pass: false, reasons: ["DATA_TIDAK_LENGKAP"], ohlc: null };
+  if (!x || !last || !prev) {
+    return { pass: false, reasons: ["DATA_TIDAK_LENGKAP"] };
+  }
 
-  const ohlc = calculateOHLCScore(stock);
-  const closeVsEma20 = Number(x.ema20) > 0 ? ((Number(last.close) / Number(x.ema20)) - 1) * 100 : Infinity;
   const checks = [
     [s.score >= CFG.HIGH_WINRATE_MIN_PFS, `PFS>=${CFG.HIGH_WINRATE_MIN_PFS}`],
     [eas.score >= CFG.HIGH_WINRATE_MIN_EAS, `EAS>=${CFG.HIGH_WINRATE_MIN_EAS}`],
@@ -1108,18 +1044,13 @@ function highWinratePass(stock, calc, s, eas, trendScore, timingScore, entry) {
     [s.volatility10Label === "SEDANG" || s.volatility10Label === "KUAT" || s.volatility10Label === "TOP VOLATILITAS", "VOLATILITAS>=SEDANG"],
     [Number(s.rsi) >= 52 && Number(s.rsi) <= 68, "RSI 52-68"],
     [!CFG.HIGH_WINRATE_REQUIRE_MACD_POSITIVE || Number(x.macdHist) > 0, "MACD>0"],
-    [ohlc.score >= CFG.OHLC_MIN_SCORE, `OHLC>=${CFG.OHLC_MIN_SCORE}`],
-    [ohlc.bullish, "OHLC_BULLISH"],
-    [ohlc.closeLocation >= CFG.OHLC_MIN_CLOSE_LOCATION, "CLOSE_LOCATION>=70%"],
-    [ohlc.upperWickRatio <= CFG.OHLC_MAX_UPPER_WICK_RATIO, "UPPER_WICK<=25%"],
-    [closeVsEma20 <= CFG.OHLC_MAX_DISTANCE_EMA20_PCT, `CLOSE<=EMA20+${CFG.OHLC_MAX_DISTANCE_EMA20_PCT}%`],
     [Number(last.close) > Number(x.ema20), "CLOSE>EMA20"],
     [Number(x.ema20) > Number(x.ema50), "EMA20>EMA50"],
     [Number(last.close) > Number(x.ema50), "CLOSE>EMA50"],
   ];
-  if (CFG.OHLC_REQUIRE_CLOSE_ABOVE_PREV_HIGH) checks.push([ohlc.higherHigh && Number(last.close) > Number(prev.high), "BREAKOUT_PREV_HIGH"]);
+
   const failed = checks.filter(([ok]) => !ok).map(([, label]) => label);
-  return { pass: failed.length === 0, reasons: failed, ohlc };
+  return { pass: failed.length === 0, reasons: failed };
 }
 
 function classifyBacktestClose(changePct) {
@@ -1299,7 +1230,7 @@ async function runBacktest(fetched, ihsg, mode = "all") {
           if (!highWinrate.pass) continue;
         }
         const outcome=evaluateAdaptiveRecovery(stock,i,ihsg); if(!outcome) continue;
-        trades.push({tradeId:`${ticker}-${dateKey(signalBar.date)}`,ticker,signalDate:dateKey(signalBar.date),criterion,filterProfile:mode === "highwinrate" ? "HIGH_WINRATE" : "BASELINE",changePct,pfs:s.score,eas:eas.score,trendScore,timingScore,entryScore:entry.entryScore,entryDecision:entry.entryDecision,entryGrade:entry.entryGrade,trendQuality:s.trendQuality,highWinrateChecks:highWinrate?.reasons || [],ohlcScore:highWinrate?.ohlc?.score ?? null,ohlcLabel:highWinrate?.ohlc?.label ?? null,ohlcReasons:highWinrate?.ohlc?.reasons ?? [],...outcome});
+        trades.push({tradeId:`${ticker}-${dateKey(signalBar.date)}`,ticker,signalDate:dateKey(signalBar.date),criterion,filterProfile:mode === "highwinrate" ? "HIGH_WINRATE" : "BASELINE",changePct,pfs:s.score,eas:eas.score,trendScore,timingScore,entryScore:entry.entryScore,entryDecision:entry.entryDecision,entryGrade:entry.entryGrade,trendQuality:s.trendQuality,highWinrateChecks:highWinrate?.reasons || [],...outcome});
       }catch(_){ }
     }
   }
@@ -1310,14 +1241,9 @@ async function runBacktest(fetched, ihsg, mode = "all") {
     const fail = rows.filter(x => x.exitReason === 'FAILED_RECOVERY').length;
     const ad = rows.filter(x => x.adCount > 0);
     const adRec = ad.filter(x => x.recoveryStatus === 'RECOVERY_TP1' || x.recoveryStatus === 'RECOVERY');
-    const ohlcRows = rows.filter(x => Number.isFinite(Number(x.ohlcScore)));
-    const avgOHLC = ohlcRows.length ? average(ohlcRows.map(x => Number(x.ohlcScore))) : null;
-    const strongOHLC = ohlcRows.filter(x => Number(x.ohlcScore) >= CFG.OHLC_STRONG_SCORE).length;
     const avg = (a) => a.length ? average(a) : null;
     return {
       signals: n,
-      avgOHLCScore: avgOHLC,
-      strongOHLC,
       tp1Hit: tp1,
       tp1WinRate: n ? tp1 / n * 100 : 0,
       recovery: rec,
@@ -1505,6 +1431,108 @@ async function sendTelegramTo(chatId, message) {
   }
 }
 
+async function sendTelegramPhoto(chatId, imageBuffer, filename, caption = "") {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !chatId || !imageBuffer) return;
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) form.append("caption", caption.slice(0, 1024));
+  form.append("photo", new Blob([imageBuffer], { type: "image/png" }), filename);
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+    method: "POST",
+    body: form
+  });
+  const result = await response.json();
+  if (!result.ok) throw new Error(result.description || "Telegram sendPhoto gagal");
+}
+
+function emaSeries(stock, period = 20) {
+  const k = 2 / (period + 1);
+  let ema = null;
+  return stock.map((d) => {
+    const close = Number(d.close);
+    ema = ema === null ? close : close * k + ema * (1 - k);
+    return ema;
+  });
+}
+
+function priceChannelSeries(stock, period = 10) {
+  return stock.map((_, i) => {
+    const start = Math.max(0, i - period + 1);
+    const win = stock.slice(start, i + 1);
+    return {
+      high: Math.max(...win.map(d => Number(d.high))),
+      low: Math.min(...win.map(d => Number(d.low)))
+    };
+  });
+}
+
+function indicatorSnapshot(stock) {
+  const i = stock.length - 1;
+  const rsi = calcRSI(stock, i, 14);
+  let ema8 = null, ema14 = null, signal = null;
+  const k8 = 2 / 9, k14 = 2 / 15, k9 = 2 / 10;
+  for (const d of stock) {
+    const close = Number(d.close);
+    ema8 = ema8 === null ? close : close * k8 + ema8 * (1 - k8);
+    ema14 = ema14 === null ? close : close * k14 + ema14 * (1 - k14);
+    const macd = ema8 - ema14;
+    signal = signal === null ? macd : macd * k9 + signal * (1 - k9);
+  }
+  const macdHist = (ema8 - ema14) - signal;
+  let obv = 0;
+  for (let j = 1; j <= i; j++) {
+    if (stock[j].close > stock[j - 1].close) obv += stock[j].volume;
+    else if (stock[j].close < stock[j - 1].close) obv -= stock[j].volume;
+  }
+  return { rsi, macdHist, obv };
+}
+
+async function createTelegramChart(ticker, stock) {
+  const bars = stock.slice(-30);
+  if (bars.length < 30) throw new Error(`${ticker}: candle kurang dari 30`);
+
+  const ema20 = emaSeries(stock, 20).slice(-30);
+  const channel = priceChannelSeries(stock, 10).slice(-30);
+  const candleData = bars.map(d => ({
+    x: new Date(d.date).getTime(),
+    o: Number(d.open), h: Number(d.high), l: Number(d.low), c: Number(d.close)
+  }));
+  const emaData = bars.map((d, i) => ({ x: new Date(d.date).getTime(), y: ema20[i] }));
+  const highData = bars.map((d, i) => ({ x: new Date(d.date).getTime(), y: channel[i].high }));
+  const lowData = bars.map((d, i) => ({ x: new Date(d.date).getTime(), y: channel[i].low }));
+
+  const config = {
+    type: "candlestick",
+    data: {
+      datasets: [
+        { label: `${ticker} OHLC`, data: candleData },
+        { type: "line", label: "EMA20", data: emaData, borderColor: "#1976d2", borderWidth: 2, pointRadius: 0, fill: false },
+        { type: "line", label: "Price Channel High 10", data: highData, borderColor: "#2e7d32", borderWidth: 1, pointRadius: 0, fill: false },
+        { type: "line", label: "Price Channel Low 10", data: lowData, borderColor: "#c62828", borderWidth: 1, pointRadius: 0, fill: false }
+      ]
+    },
+    options: {
+      plugins: {
+        title: { display: true, text: `${ticker} — 30 Candles | EMA20 | Price Channel 10` },
+        legend: { display: true, position: "bottom" }
+      },
+      scales: { x: { type: "time", time: { unit: "day" } }, y: { position: "left" } }
+    }
+  };
+
+  const response = await fetch("https://quickchart.io/chart", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chart: JSON.stringify(config),
+      width: 1200, height: 720, format: "png", backgroundColor: "white"
+    })
+  });
+  if (!response.ok) throw new Error(`QuickChart HTTP ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
 async function sendTelegramDocument(chatId, filePath, caption = "") {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token || !chatId) return;
@@ -1544,7 +1572,6 @@ function formatBacktestCriterion(label, x) {
   return [
     label,
     `Sinyal       : ${x.signals}`,
-    `OHLC Score  : ${x.avgOHLCScore == null ? '-' : x.avgOHLCScore.toFixed(1)} | >=${CFG.OHLC_STRONG_SCORE}: ${x.strongOHLC}`,
     `TP Adaptive   : +${CFG.RECOVERY_TP1_PCT}% | Hit: ${x.tp1Hit} | WR: ${x.tp1WinRate.toFixed(1)}%`,
     `Recovery     : ${x.recovery} | Rate: ${x.recoveryRate.toFixed(1)}%`,
     `AD Trades    : ${x.averageDownTrades} | AD Success: ${x.averageDownSuccessRate.toFixed(1)}%`,
@@ -1561,7 +1588,6 @@ function formatTradeDetail(t) {
     `📌 ${t.ticker} | ${t.signalDate}`,
     `Entry       : ${formatPrice(t.entry)} | PFS ${t.pfs}`,
     `Timing/Trend/Entry : ${t.timingScore}/${t.trendScore}/${t.entryScore}`,
-    `OHLC Score  : ${t.ohlcScore ?? "-"} | ${t.ohlcLabel ?? "-"}`,
     `Grade       : ${t.entryGrade} | ${t.criterion}`,
     `AD          : ${t.adCount}x | Avg akhir ${formatPrice(t.finalAveragePrice)}`,
     ...(t.adEvents || []).map(a => `  AD${a.number} D+${a.day} ${a.date} @ ${formatPrice(a.price)} | Avg ${formatPrice(a.averagePriceAfter)} | RS ${a.recoveryScore}`),
@@ -1607,8 +1633,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
     (isHighWinrate
       ? "🏆 MODE HIGH WINRATE V67\n🟢 Close > -1% + OHLC\n" +
         `PFS>=${CFG.HIGH_WINRATE_MIN_PFS} | EAS>=${CFG.HIGH_WINRATE_MIN_EAS} | Trend>=${CFG.HIGH_WINRATE_MIN_TREND} | Timing>=${CFG.HIGH_WINRATE_MIN_TIMING} | Entry>=${CFG.HIGH_WINRATE_MIN_ENTRY}\n` +
-        `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION} | RSI 52-68 | MACD>0\n` +
-        `OHLC>=${CFG.OHLC_MIN_SCORE} | Body>=${CFG.OHLC_MIN_BODY_RATIO} | CloseLoc>=${CFG.OHLC_MIN_CLOSE_LOCATION} | UpperWick<=${CFG.OHLC_MAX_UPPER_WICK_RATIO}\n\n`
+        `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION} | RSI 52-68 | MACD>0\n\n`
       : "🔴 Kriteria 1: Close < -1%\n🟢 Kriteria 2: Close > -1%\n\n") +
     `Adaptive TP +${CFG.BACKTEST_TP1_PCT}% | MAX DD -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
     `Horizon: ${CFG.BACKTEST_HORIZON_DAYS} hari\n\n` +
@@ -1621,7 +1646,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
     const green = result.criteria["CLOSE_>-1%"] || red;
     const selected = mode === "red" || mode === "highwinrate" ? red : mode === "green" ? green : null;
 
-    let message = `🧪 BACKTEST SELESAI — V67.1 ${mode === "highwinrate" ? "OHLC HIGH WINRATE - CLOSE <= -1%" : "ADAPTIVE RECOVERY"}\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🧪 BACKTEST SELESAI — V67.1 ${mode === "highwinrate" ? "HIGH WINRATE - CLOSE <= -1%" : "ADAPTIVE RECOVERY"}\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (selected) {
       message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE < -1%" : mode === "highwinrate" ? "🏆 HIGH WINRATE: CLOSE <= -1%" : "🟢 CLOSE > -1%", selected);
     } else {
@@ -1878,7 +1903,7 @@ async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V65.5 ADAPTIVE RECOVERY + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
+  console.log(`PFS Scanner V67.4 HIGH WINRATE + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`History     : ${CFG.LOOKBACK_DAYS} trading candles (Yahoo window auto-expanded)`);
   console.log(`Universe    : ${symbols.length} saham`);
@@ -1964,6 +1989,7 @@ async function main() {
         volume: last.volume,
         rsi: s.rsi,
         rsi14: s.rsi,
+        willr: calc.latest.willr,
         ema20: calc.latest.ema20,
         ema50: s.ema50,
         macdHist: calc.latest.macdHist,
@@ -1993,18 +2019,13 @@ async function main() {
         reason: s.reason,
         highWinratePass: highWinrate.pass,
         highWinrateFailed: highWinrate.reasons,
-        ohlcScore: highWinrate.ohlc?.score ?? null,
-        ohlcLabel: highWinrate.ohlc?.label ?? null,
-        ohlcBodyRatio: highWinrate.ohlc?.bodyRatio ?? null,
-        ohlcCloseLocation: highWinrate.ohlc?.closeLocation ?? null,
-        ohlcUpperWickRatio: highWinrate.ohlc?.upperWickRatio ?? null,
       });
     } catch (error) {
       errors.push({ ticker, error: error.message });
     }
   }
 
-  // V67.3 HIGH WINRATE: hanya saham yang lolos SELURUH filter HIGH WINRATE + OHLC yang boleh keluar.
+  // V67.4 HIGH WINRATE: hanya saham yang lolos SELURUH filter HIGH WINRATE + OHLC yang boleh keluar.
   // Saham yang gagal satu saja tidak dimasukkan ke screening Telegram/CSV/JSON.
   const rejectedByStrictFilter = results.filter((r) => !r.highWinratePass).length;
 
@@ -2016,8 +2037,7 @@ async function main() {
         b.score - a.score ||
         b.trendScore - a.trendScore ||
         b.timingScore - a.timingScore ||
-        b.earlyAccumulationScore - a.earlyAccumulationScore ||
-        (b.ohlcScore ?? 0) - (a.ohlcScore ?? 0)
+        b.earlyAccumulationScore - a.earlyAccumulationScore
     )
     .slice(0, CFG.MAX_RESULTS);
 
@@ -2071,70 +2091,69 @@ async function main() {
     return text;
   };
 
-  let telegramText =
-    "📊 PFS SCREENING IDX - V67.3 HIGH WINRATE\n" +
+  let telegramSummary =
+    "📊 PFS SCREENING IDX - V67.4 HIGH WINRATE\n" +
     `Total LOLOS : ${qualified.length}\n` +
     `HIGH WINRATE : PFS>=${CFG.HIGH_WINRATE_MIN_PFS} | EAS>=${CFG.HIGH_WINRATE_MIN_EAS} | Trend>=${CFG.HIGH_WINRATE_MIN_TREND} | Timing>=${CFG.HIGH_WINRATE_MIN_TIMING} | Entry>=${CFG.HIGH_WINRATE_MIN_ENTRY}\n` +
-    `OHLC>=${CFG.OHLC_MIN_SCORE} | RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION}\n` +
-    `Dicek       : ${symbols.length}\n` +
-    `Berhasil    : ${results.length}\n` +
-    `Gagal filter: ${rejectedByStrictFilter} (tidak ditampilkan)\n` +
-    `Error       : ${errors.length}\n` +
+    `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION} | RSI 52-68 | MACD>0\n` +
+    `Dicek : ${symbols.length} | Berhasil : ${results.length} | Gagal filter : ${rejectedByStrictFilter} | Error : ${errors.length}\n` +
     "━━━━━━━━━━━━━━━━━━━━\n";
 
   if (qualified.length === 0) {
-    telegramText += "\n⚠️ TIDAK ADA SAHAM LOLOS FILTER.\n";
+    telegramSummary += "⚠️ TIDAK ADA SAHAM LOLOS FILTER.\n";
     if (errors.length > 0) {
-      telegramText += "\nContoh error pertama: " + errors.slice(0, 5).map(e => `${e.ticker}: ${e.error}`).join(" | ");
-    } else if (results.length > 0) {
-      const top = results.slice(0, 5).map(r => `${r.ticker}=${fmtInt(r.score)}`).join(", ");
-      telegramText += `\nTop score di bawah minimum: ${top}`;
+      telegramSummary += "\nContoh error: " + errors.slice(0, 5).map(e => `${e.ticker}: ${e.error}`).join(" | ");
     }
+    await sendTelegram(telegramSummary);
   } else {
-    telegramText += "\n";
-    qualified.forEach((r, i) => {
-      telegramText +=
-        `${i + 1}. ${r.ticker} | PFS ${fmtInt(r.score)} | ${r.signal || "-"}\n` +
-        `🎯 ENTRY    : ${fmtInt(r.entryScore)}/100 | ${cleanText(r.entryDecision)} | Grade ${cleanText(r.entryGrade)}\n` +
-        `⏱ TIMING   : ${fmtInt(r.timingScore)}/100\n` +
-        `📈 TREND    : ${fmtInt(r.trendScore)}/100 | ${cleanText(r.trendQuality)}\n` +
-        `🟢 EAS      : ${fmtInt(r.earlyAccumulationScore)}/100 | ${cleanText(r.earlyAccumulationLabel)}\n` +
-        `🟣 OHLC     : ${fmtInt(r.ohlcScore)}/100 | ${cleanText(r.ohlcLabel)}\n` +
-        `Vol        : ${cleanText(r.volatility)}\n` +
-        `Akum 1D    : ${cleanText(r.accumulation)} | Avg 1D  : ${fmtNum(r.accumulationAvg1d)}\n` +
-        `Akum 5D    : ${cleanText(r.accumulation5d)} | Avg 5D  : ${fmtNum(r.accumulationAvg5d)}\n` +
-        `Akum 10D   : ${cleanText(r.accumulation10d)} | Avg 10D: ${fmtNum(r.accumulationAvg10d)}\n` +
-        `Close      : ${fmtNum(r.close, 0)} | Chg : ${fmtPct(r.changePct)}\n` +
-        `RSI14      : ${fmtNum(r.rsi14)}\n` +
-        `EMA20      : ${fmtNum(r.ema20)}\n` +
-        `EMA50      : ${fmtNum(r.ema50)}\n` +
-        `MACD       : ${fmtNum(r.macdHist)}\n` +
-        `VOL/AVG20  : ${fmtNum(r.volRatio)}\n` +
-        `ATR14      : ${fmtPct(r.atrPct)}\n` +
-        `HIGH20     : ${fmtNum(r.high20, 0)}\n` +
-        `RSR20/60   : ${fmtInt(r.rsr20)} / ${fmtInt(r.rsr60)}\n` +
-        `CANDLE     : ${r.candle || "-"}\n` +
-        `TREND      : ${r.trend || "-"}\n` +
-        `EAS REASON : ${cleanText(r.earlyAccumulationReason)}\n` +
-        "━━━━━━━━━━━━━━━━━━━━\n";
-    });
+    await sendTelegram(telegramSummary + `\nMengirim ${qualified.length} saham, masing-masing 1 chat + 1 chart...`);
+
+    for (const r of qualified) {
+      const item = fetched.find(x => x.ticker === r.ticker);
+      if (!item?.stock) continue;
+
+      const snap = indicatorSnapshot(item.stock);
+      const caption =
+        `📈 ${r.ticker} | 30 CANDLE\n` +
+        `PFS ${fmtInt(r.score)} | EAS ${fmtInt(r.earlyAccumulationScore)} | Entry ${fmtInt(r.entryScore)}\n` +
+        `RSI14 ${fmtNum(r.rsi14)} | MACD ${fmtNum(r.macdHist)} | OBV ${fmtInt(snap.obv)}\n` +
+        `EMA20 ${fmtNum(r.ema20)} | Price Channel 10 | Vol ${cleanText(r.volatility)}`;
+
+      const detail =
+        `${r.rank}. ${r.ticker} | ${r.signal || "-"}\n` +
+        `💰 CLOSE : ${fmtNum(r.close, 0)} | Chg ${fmtPct(r.changePct)}\n` +
+        `🎯 ENTRY : ${fmtInt(r.entryScore)}/100 | ${cleanText(r.entryDecision)} | Grade ${cleanText(r.entryGrade)}\n` +
+        `📊 PFS/EAS : ${fmtInt(r.score)}/${fmtInt(r.earlyAccumulationScore)}\n` +
+        `⏱ TIMING : ${fmtInt(r.timingScore)} | 📈 TREND : ${fmtInt(r.trendScore)} (${cleanText(r.trendQuality)})\n` +
+        `📈 RSR20/60 : ${fmtInt(r.rsr20)}/${fmtInt(r.rsr60)}\n` +
+        `RSI14 : ${fmtNum(r.rsi14)} | MACD : ${fmtNum(r.macdHist)} | WR% : ${fmtNum(r.willr)}\n` +
+        `EMA20 : ${fmtNum(r.ema20)} | EMA50 : ${fmtNum(r.ema50)}\n` +
+        `VOL/AVG20 : ${fmtNum(r.volRatio)} | ATR14 : ${fmtPct(r.atrPct)} | Volatilitas : ${cleanText(r.volatility)}\n` +
+        `Akum 1D : ${cleanText(r.accumulation)} | 5D : ${cleanText(r.accumulation5d)} | 10D : ${cleanText(r.accumulation10d)}\n` +
+        `📌 Chart : 30 candlestick + EMA20 + Price Channel 10\n` +
+        "━━━━━━━━━━━━━━━━━━━━";
+
+      try {
+        const chart = await createTelegramChart(r.ticker, item.stock);
+        await sendTelegramPhoto(process.env.TELEGRAM_CHAT_ID, chart, `${r.ticker}_30candle.png`, caption);
+      } catch (chartError) {
+        console.error(`Chart ${r.ticker} gagal:`, chartError.message);
+        await sendTelegramTo(process.env.TELEGRAM_CHAT_ID, `⚠️ Chart ${r.ticker} gagal dibuat: ${chartError.message}`);
+      }
+      await sendTelegram(detail);
+    }
   }
 
   if (shouldRunBacktest && backtest) {
     const btRed = backtest.criteria["MERAH: Close < -1%"];
     const btGreen = backtest.criteria["CLOSE_>-1%"];
-    telegramText +=
+    await sendTelegram(
       "\n🧪 BACKTEST V66.1 HIGH WINRATE - SINGLE ADAPTIVE TP\n" +
       `Target : Adaptive TP +${CFG.RECOVERY_TP1_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
-       `AD : D1 -${CFG.RECOVERY_AD1_DD_PCT}% | D2 -${CFG.RECOVERY_AD2_DD_PCT}% | Max DD -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
+      `AD : D1 -${CFG.RECOVERY_AD1_DD_PCT}% | D2 -${CFG.RECOVERY_AD2_DD_PCT}% | Max DD -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
       `🔴 MERAH: Close < -1% : ${btRed.signals} | TP1 ${btRed.tp1WinRate.toFixed(1)}% | REC ${btRed.recoveryRate.toFixed(1)}% | AD ${btRed.averageDownSuccessRate.toFixed(1)}%\n` +
-      `🟢 CLOSE > -1%      : ${btGreen.signals} | TP1 ${btGreen.tp1WinRate.toFixed(1)}% | REC ${btGreen.recoveryRate.toFixed(1)}% | AD ${btGreen.averageDownSuccessRate.toFixed(1)}%\n` +
-      "━━━━━━━━━━━━━━━━━━━━\n";
-  }
-
-  const TELEGRAM_LIMIT = 3800;
-  for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
-    await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
+      `🟢 CLOSE > -1%      : ${btGreen.signals} | TP1 ${btGreen.tp1WinRate.toFixed(1)}% | REC ${btGreen.recoveryRate.toFixed(1)}% | AD ${btGreen.averageDownSuccessRate.toFixed(1)}%`
+    );
   }
 
   console.log("");

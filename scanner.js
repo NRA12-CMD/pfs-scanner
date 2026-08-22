@@ -1463,11 +1463,11 @@ async function telegramBotLoop() {
 }
 
 async function main() {
-  const runBacktest = String(process.env.RUN_BACKTEST ?? "1") !== "0";
+  const shouldRunBacktest = String(process.env.RUN_BACKTEST ?? "1") !== "0";
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V62 STRICT PFS + EAS + TIMING + TREND + ENTRY Node.js`);
+  console.log(`PFS Scanner V65.1 ADAPTIVE RECOVERY + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`History     : ${CFG.LOOKBACK_DAYS} trading candles (Yahoo window auto-expanded)`);
   console.log(`Universe    : ${symbols.length} saham`);
@@ -1493,7 +1493,7 @@ async function main() {
   );
 
   let backtest = null;
-  if (runBacktest) {
+  if (shouldRunBacktest) {
     // V65 ADAPTIVE RECOVERY BACKTEST: dijalankan dari data historis yang sama, tanpa look-ahead.
     console.log("Menjalankan backtest 2 kriteria close...");
     backtest = await runBacktest(fetched, ihsg);
@@ -1718,7 +1718,7 @@ async function main() {
     });
   }
 
-  if (runBacktest && backtest) {
+  if (shouldRunBacktest && backtest) {
     const btRed = backtest.criteria["MERAH_-1%_SAMPAI_0%"];
     const btGreen = backtest.criteria["CLOSE_>=_0%"];
     telegramText +=
@@ -1740,7 +1740,7 @@ async function main() {
   console.log(`Berhasil: ${results.length}`);
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
   console.log(`Error: ${errors.length}`);
-  if (runBacktest && backtest) {
+  if (shouldRunBacktest && backtest) {
     console.log(`BACKTEST MERAH -1% s/d <0%: ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].signals} sinyal | TP1 WR ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].tp1WinRate.toFixed(1)}%`);
     console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>=_0%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>=_0%"].tp1WinRate.toFixed(1)}%`);
   }

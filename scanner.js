@@ -64,12 +64,23 @@ const CFG = {
   QUALIFY_MIN_ENTRY: 70,
   REQUIRE_UPTREND: true,
 
-  // V64 BACKTEST + TELEGRAM CONTROLLER
+  // V65 ADAPTIVE RECOVERY BACKTEST + TELEGRAM CONTROLLER
   BACKTEST_DAYS: 120,
   BACKTEST_HORIZON_DAYS: 10,
   BACKTEST_TP1_PCT: 3.0,
   BACKTEST_TP2_PCT: 6.0,
-  BACKTEST_SL_PCT: 3.0,
+  // V65 Adaptive Recovery: no fixed SL -3% exit.
+  RECOVERY_AD1_DD_PCT: 2.0,
+  RECOVERY_AD2_DD_PCT: 4.0,
+  RECOVERY_MAX_DD_PCT: 8.0,
+  RECOVERY_MAX_AD: 2,
+  RECOVERY_MIN_PFS: 70,
+  RECOVERY_MIN_EAS: 50,
+  RECOVERY_MIN_TREND: 55,
+  RECOVERY_MIN_TIMING: 45,
+  RECOVERY_MIN_ENTRY: 62,
+  RECOVERY_TP1_PCT: 3.0,
+  RECOVERY_TP2_PCT: 6.0,
   BACKTEST_MIN_BARS: 80,
 
   MAX_RESULTS: 50,
@@ -1008,183 +1019,121 @@ function classifyBacktestClose(changePct) {
   return null;
 }
 
-function evaluateForwardOutcome(stock, entryIndex) {
+function recoveryScoreForDay(stock, index, ihsg) {
+  const histStock = stock.slice(0, index + 1);
+  if (histStock.length < CFG.BACKTEST_MIN_BARS) return null;
+  const signalBar = histStock.at(-1);
+  const histIHSG = ihsg.filter(x => x.date <= signalBar.date);
+  if (histIHSG.length < CFG.BACKTEST_MIN_BARS) return null;
+  try {
+    const calc = calculateIndicators(histStock, histIHSG);
+    const s = screenScore(histStock, calc);
+    const eas = calculateEarlyAccumulationScore(histStock, calc);
+    const trendScore = calculateTrendScore(histStock, calc, s);
+    const timingScore = calculateTimingScore(histStock, calc, s);
+    const entry = calculateEntryDecision(s.score, eas.score, trendScore, timingScore);
+    let score = 0;
+    if (s.score >= 85) score += 25; else if (s.score >= 75) score += 22; else if (s.score >= 70) score += 18; else if (s.score >= 65) score += 12;
+    if (eas.score >= 75) score += 20; else if (eas.score >= 65) score += 17; else if (eas.score >= 50) score += 13; else if (eas.score >= 40) score += 8;
+    if (trendScore >= 75) score += 20; else if (trendScore >= 65) score += 16; else if (trendScore >= 55) score += 12; else if (trendScore >= 45) score += 6;
+    if (timingScore >= 70) score += 15; else if (timingScore >= 55) score += 12; else if (timingScore >= 45) score += 8; else if (timingScore >= 35) score += 4;
+    if (s.trendQuality === 'UPTREND') score += 10; else if (s.trendQuality === 'MIXED BULLISH') score += 5;
+    const last = histStock.at(-1), prev = histStock.at(-2);
+    if (last && prev && last.close >= last.open && last.close >= prev.close) score += 10;
+    score = Math.min(100, Math.round(score));
+    const eligible = score >= 60 && s.score >= CFG.RECOVERY_MIN_PFS && eas.score >= CFG.RECOVERY_MIN_EAS && trendScore >= CFG.RECOVERY_MIN_TREND && timingScore >= CFG.RECOVERY_MIN_TIMING && entry.entryScore >= CFG.RECOVERY_MIN_ENTRY && s.trendQuality !== 'LEMAH';
+    return { recoveryScore: score, eligible, pfs:s.score, eas:eas.score, trendScore, timingScore, entryScore:entry.entryScore, trendQuality:s.trendQuality, rsi:s.rsi, macdHist:calc.latest.macdHist, rsr20:calc.latest.rsr20, accumulationScore:s.accumulationScore };
+  } catch (_) { return null; }
+}
+
+function evaluateAdaptiveRecovery(stock, entryIndex, ihsg) {
   const entry = Number(stock[entryIndex]?.close);
   if (!Number.isFinite(entry) || entry <= 0) return null;
-
-  const tp1 = entry * (1 + CFG.BACKTEST_TP1_PCT / 100);
-  const tp2 = entry * (1 + CFG.BACKTEST_TP2_PCT / 100);
-  const sl = entry * (1 - CFG.BACKTEST_SL_PCT / 100);
   const end = Math.min(stock.length - 1, entryIndex + CFG.BACKTEST_HORIZON_DAYS);
+  let totalCost = entry, totalUnits = 1, averagePrice = entry, adCount = 0;
+  const adEvents = [];
+  let tp1HitDay=null, tp2HitDay=null, recoveryDay=null, breakevenDay=null, failedDay=null, exitDay=null;
+  let exitReason='EXPIRED', maxDrawdownPct=0, maxGainPct=0, lowestPrice=entry, highestPrice=entry;
 
-  let tp1HitDay = null;
-  let tp2HitDay = null;
-  let slHitDay = null;
-  let firstOutcome = "EXPIRED";
+  for (let j=entryIndex+1; j<=end; j++) {
+    const bar=stock[j], high=Number(bar.high), low=Number(bar.low), close=Number(bar.close);
+    if (![high,low,close].every(Number.isFinite)) continue;
+    const day=j-entryIndex;
+    lowestPrice=Math.min(lowestPrice,low); highestPrice=Math.max(highestPrice,high);
+    maxDrawdownPct=Math.min(maxDrawdownPct,((low/averagePrice)-1)*100);
+    maxGainPct=Math.max(maxGainPct,((high/averagePrice)-1)*100);
+    const tp1=averagePrice*(1+CFG.RECOVERY_TP1_PCT/100), tp2=averagePrice*(1+CFG.RECOVERY_TP2_PCT/100);
 
-  for (let j = entryIndex + 1; j <= end; j++) {
-    const bar = stock[j];
-    const high = Number(bar.high);
-    const low = Number(bar.low);
-    if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+    if (tp1HitDay===null && high>=tp1) tp1HitDay=day;
+    if (tp2HitDay===null && high>=tp2) { tp2HitDay=day; exitDay=day; exitReason='TP2'; break; }
+    if (breakevenDay===null && close>=averagePrice) { breakevenDay=day; if (adCount>0 && recoveryDay===null) recoveryDay=day; }
+    if (tp1HitDay!==null) continue;
 
-    // Jika TP dan SL tersentuh pada candle yang sama, kita pakai asumsi konservatif:
-    // SL dianggap terjadi lebih dulu karena urutan intraday tidak diketahui dari data 1D.
-    if (slHitDay === null && low <= sl) {
-      slHitDay = j - entryIndex;
-      if (firstOutcome === "EXPIRED") firstOutcome = "SL";
+    const ddClose=((close/averagePrice)-1)*100;
+    const threshold=adCount===0 ? -CFG.RECOVERY_AD1_DD_PCT : -CFG.RECOVERY_AD2_DD_PCT;
+    if (adCount<CFG.RECOVERY_MAX_AD && ddClose<=threshold) {
+      const rec=recoveryScoreForDay(stock,j,ihsg);
+      if (rec?.eligible && Math.abs(ddClose)<=CFG.RECOVERY_MAX_DD_PCT) {
+        totalCost+=close; totalUnits+=1; averagePrice=totalCost/totalUnits; adCount+=1;
+        adEvents.push({number:adCount,date:dateKey(bar.date),day,price:close,drawdownPct:ddClose,averagePriceAfter:averagePrice,recoveryScore:rec.recoveryScore,pfs:rec.pfs,eas:rec.eas,trendScore:rec.trendScore,timingScore:rec.timingScore,entryScore:rec.entryScore});
+        continue;
+      }
     }
-    if (tp1HitDay === null && high >= tp1) {
-      tp1HitDay = j - entryIndex;
-      if (firstOutcome === "EXPIRED" && slHitDay === null) firstOutcome = "TP1";
-    }
-    if (tp2HitDay === null && high >= tp2) {
-      tp2HitDay = j - entryIndex;
+    if (ddClose<=-CFG.RECOVERY_MAX_DD_PCT) {
+      const rec=recoveryScoreForDay(stock,j,ihsg);
+      if (!(rec?.eligible && adCount<CFG.RECOVERY_MAX_AD)) { failedDay=day; exitDay=day; exitReason='FAILED_RECOVERY'; break; }
     }
   }
-
-  const lastClose = Number(stock[end]?.close ?? entry);
-  const maxHigh = Math.max(...stock.slice(entryIndex + 1, end + 1).map(x => Number(x.high) || 0), entry);
-  const minLow = Math.min(...stock.slice(entryIndex + 1, end + 1).map(x => Number(x.low) || entry), entry);
-
-  return {
-    entry,
-    tp1,
-    tp2,
-    sl,
-    horizon: end - entryIndex,
-    tp1Hit: tp1HitDay !== null,
-    tp2Hit: tp2HitDay !== null,
-    slHit: slHitDay !== null,
-    tp1HitDay,
-    tp2HitDay,
-    slHitDay,
-    firstOutcome,
-    lastClose,
-    maxGainPct: ((maxHigh / entry) - 1) * 100,
-    maxDrawdownPct: ((minLow / entry) - 1) * 100,
-  };
+  if (exitDay===null) { exitDay=end-entryIndex; exitReason='EXPIRED'; }
+  const exitPrice=Number(stock[entryIndex+exitDay]?.close ?? stock[end]?.close ?? entry);
+  const finalReturnPct=((exitPrice/averagePrice)-1)*100;
+  const recoveryStatus=exitReason==='TP2'?'RECOVERY_TP2':exitReason==='FAILED_RECOVERY'?'FAILED':adCount>0&&breakevenDay!==null?'RECOVERY':adCount>0?'PULLBACK_AD':'DIRECT';
+  return {entry,initialAveragePrice:entry,finalAveragePrice:averagePrice,totalUnits,adCount,adEvents,tp1:entry*(1+CFG.RECOVERY_TP1_PCT/100),tp2:entry*(1+CFG.RECOVERY_TP2_PCT/100),tp1Hit:tp1HitDay!==null,tp2Hit:tp2HitDay!==null,tp1HitDay,tp2HitDay,recoveryDay,breakevenDay,failedDay,exitDay,exitDate:dateKey(stock[entryIndex+exitDay]?.date ?? stock[end]?.date),exitPrice,exitReason,recoveryStatus,daysToRecovery:recoveryDay,daysToBEP:breakevenDay,daysToTP1:tp1HitDay,daysToTP2:tp2HitDay,maxGainPct,maxDrawdownPct,lowestPrice,highestPrice,finalReturnPct};
 }
 
 async function runBacktest(fetched, ihsg) {
-  const trades = [];
-  const perStock = [];
-
+  const trades=[];
   for (const item of fetched) {
-    if (item?.error || !item.stock || item.stock.length < CFG.BACKTEST_MIN_BARS + CFG.BACKTEST_HORIZON_DAYS) continue;
-    const ticker = item.ticker;
-    const stock = item.stock;
-    const lastSignalIndex = stock.length - CFG.BACKTEST_HORIZON_DAYS - 1;
-    const firstSignalIndex = Math.max(CFG.BACKTEST_MIN_BARS - 1, lastSignalIndex - CFG.BACKTEST_DAYS + 1);
-
-    for (let i = firstSignalIndex; i <= lastSignalIndex; i++) {
-      const histStock = stock.slice(0, i + 1);
-      const signalBar = histStock.at(-1);
-      const prevBar = histStock.at(-2);
-      if (!signalBar || !prevBar) continue;
-
-      const changePct = prevBar.close ? ((signalBar.close / prevBar.close) - 1) * 100 : null;
-      const criterion = classifyBacktestClose(changePct);
-      if (!criterion) continue;
-
-      // Anti-lookahead: indikator hanya melihat data sampai hari sinyal.
-      const histIHSG = ihsg.filter(x => x.date <= signalBar.date);
-      if (histIHSG.length < CFG.BACKTEST_MIN_BARS) continue;
-
-      try {
-        const calc = calculateIndicators(histStock, histIHSG);
-        const s = screenScore(histStock, calc);
-        const eas = calculateEarlyAccumulationScore(histStock, calc);
-        const trendScore = calculateTrendScore(histStock, calc, s);
-        const timingScore = calculateTimingScore(histStock, calc, s);
-        const entry = calculateEntryDecision(s.score, eas.score, trendScore, timingScore);
-        const trendQuality = s.trendQuality;
-
-        if (!strictPassForBacktest(s.score, eas.score, trendScore, timingScore, entry.entryScore, trendQuality)) continue;
-
-        const outcome = evaluateForwardOutcome(stock, i);
-        if (!outcome) continue;
-
-        trades.push({
-          ticker,
-          signalDate: dateKey(signalBar.date),
-          criterion,
-          changePct,
-          pfs: s.score,
-          eas: eas.score,
-          trendScore,
-          timingScore,
-          entryScore: entry.entryScore,
-          entryDecision: entry.entryDecision,
-          entryGrade: entry.entryGrade,
-          trendQuality,
-          ...outcome,
-        });
-      } catch (error) {
-        // Satu hari gagal tidak menghentikan seluruh backtest.
-      }
+    if (item?.error || !item.stock || item.stock.length < CFG.BACKTEST_MIN_BARS+CFG.BACKTEST_HORIZON_DAYS) continue;
+    const ticker=item.ticker, stock=item.stock;
+    const lastSignalIndex=stock.length-CFG.BACKTEST_HORIZON_DAYS-1;
+    const firstSignalIndex=Math.max(CFG.BACKTEST_MIN_BARS-1,lastSignalIndex-CFG.BACKTEST_DAYS+1);
+    for(let i=firstSignalIndex;i<=lastSignalIndex;i++){
+      const histStock=stock.slice(0,i+1), signalBar=histStock.at(-1), prevBar=histStock.at(-2);
+      if(!signalBar||!prevBar) continue;
+      const changePct=prevBar.close?((signalBar.close/prevBar.close)-1)*100:null;
+      const criterion=classifyBacktestClose(changePct); if(!criterion) continue;
+      const histIHSG=ihsg.filter(x=>x.date<=signalBar.date); if(histIHSG.length<CFG.BACKTEST_MIN_BARS) continue;
+      try{
+        const calc=calculateIndicators(histStock,histIHSG), s=screenScore(histStock,calc), eas=calculateEarlyAccumulationScore(histStock,calc);
+        const trendScore=calculateTrendScore(histStock,calc,s), timingScore=calculateTimingScore(histStock,calc,s), entry=calculateEntryDecision(s.score,eas.score,trendScore,timingScore);
+        if(!strictPassForBacktest(s.score,eas.score,trendScore,timingScore,entry.entryScore,s.trendQuality)) continue;
+        const outcome=evaluateAdaptiveRecovery(stock,i,ihsg); if(!outcome) continue;
+        trades.push({tradeId:`${ticker}-${dateKey(signalBar.date)}`,ticker,signalDate:dateKey(signalBar.date),criterion,changePct,pfs:s.score,eas:eas.score,trendScore,timingScore,entryScore:entry.entryScore,entryDecision:entry.entryDecision,entryGrade:entry.entryGrade,trendQuality:s.trendQuality,...outcome});
+      }catch(_){ }
     }
   }
-
-  const summarize = (rows) => {
-    const count = rows.length;
-    const tp1 = rows.filter(x => x.tp1Hit).length;
-    const tp2 = rows.filter(x => x.tp2Hit).length;
-    const sl = rows.filter(x => x.slHit).length;
-    const tp1BeforeSL = rows.filter(x => x.tp1Hit && (x.tp1HitDay ?? 999) < (x.slHitDay ?? 999)).length;
-    const tp2BeforeSL = rows.filter(x => x.tp2Hit && (x.tp2HitDay ?? 999) < (x.slHitDay ?? 999)).length;
-    const avgMaxGain = count ? average(rows.map(x => x.maxGainPct)) : 0;
-    const avgMaxDD = count ? average(rows.map(x => x.maxDrawdownPct)) : 0;
-    return {
-      signals: count,
-      tp1Hit: tp1,
-      tp1WinRate: count ? (tp1BeforeSL / count) * 100 : 0,
-      tp2Hit: tp2,
-      tp2WinRate: count ? (tp2BeforeSL / count) * 100 : 0,
-      slHit: sl,
-      slRate: count ? (sl / count) * 100 : 0,
-      avgMaxGainPct: avgMaxGain,
-      avgMaxDrawdownPct: avgMaxDD,
-    };
+  const summarize=(rows)=>{
+    const n=rows.length,tp1=rows.filter(x=>x.tp1Hit).length,tp2=rows.filter(x=>x.tp2Hit).length,rec=rows.filter(x=>x.recoveryStatus==='RECOVERY'||x.recoveryStatus==='RECOVERY_TP2').length,fail=rows.filter(x=>x.exitReason==='FAILED_RECOVERY').length,ad=rows.filter(x=>x.adCount>0),adRec=ad.filter(x=>x.recoveryStatus==='RECOVERY'||x.recoveryStatus==='RECOVERY_TP2');
+    const avg=(a)=>a.length?average(a):null;
+    return {signals:n,tp1Hit:tp1,tp1WinRate:n?tp1/n*100:0,tp2Hit:tp2,tp2WinRate:n?tp2/n*100:0,recovery:rec,recoveryRate:n?rec/n*100:0,failedRecovery:fail,failedRate:n?fail/n*100:0,averageDownTrades:ad.length,averageDownSuccess:adRec.length,averageDownSuccessRate:ad.length?adRec.length/ad.length*100:0,averageADCount:avg(ad.map(x=>x.adCount))??0,avgFinalReturnPct:n?average(rows.map(x=>x.finalReturnPct)):0,avgMaxGainPct:n?average(rows.map(x=>x.maxGainPct)):0,avgMaxDrawdownPct:n?average(rows.map(x=>x.maxDrawdownPct)):0,avgDaysToRecovery:avg(rows.filter(x=>Number.isFinite(x.daysToRecovery)).map(x=>x.daysToRecovery)),avgDaysToTP1:avg(rows.filter(x=>Number.isFinite(x.daysToTP1)).map(x=>x.daysToTP1)),avgDaysToTP2:avg(rows.filter(x=>Number.isFinite(x.daysToTP2)).map(x=>x.daysToTP2))};
   };
-
-  const criteria = {
-    "MERAH_-1%_SAMPAI_0%": summarize(trades.filter(x => x.criterion === "MERAH_-1%_SAMPAI_0%")),
-    "CLOSE_>=_0%": summarize(trades.filter(x => x.criterion === "CLOSE_>=_0%")),
-    ALL: summarize(trades),
-  };
-
-  const byGrade = {};
-  for (const grade of ["A+", "A", "B"]) {
-    byGrade[grade] = {
-      "MERAH_-1%_SAMPAI_0%": summarize(trades.filter(x => x.entryGrade === grade && x.criterion === "MERAH_-1%_SAMPAI_0%")),
-      "CLOSE_>=_0%": summarize(trades.filter(x => x.entryGrade === grade && x.criterion === "CLOSE_>=_0%")),
-    };
-  }
-
-  await fs.writeFile("output/backtest.json", JSON.stringify({
-    generatedAt: new Date().toISOString(),
-    lookbackSignalDays: CFG.BACKTEST_DAYS,
-    horizonDays: CFG.BACKTEST_HORIZON_DAYS,
-    targets: { tp1Pct: CFG.BACKTEST_TP1_PCT, tp2Pct: CFG.BACKTEST_TP2_PCT, slPct: CFG.BACKTEST_SL_PCT },
-    noLookahead: true,
-    criteria,
-    byGrade,
-    trades,
-  }, null, 2));
-
-  const headers = ["ticker","signalDate","criterion","changePct","pfs","eas","trendScore","timingScore","entryScore","entryDecision","entryGrade","trendQuality","entry","tp1","tp2","sl","tp1Hit","tp2Hit","slHit","tp1HitDay","tp2HitDay","slHitDay","firstOutcome","lastClose","maxGainPct","maxDrawdownPct"];
-  const csvEsc = v => `"${String(v ?? "").replaceAll('"','""')}"`;
-  const csv = [headers.join(","), ...trades.map(t => headers.map(h => csvEsc(t[h])).join(","))].join("\n") + "\n";
-  await fs.writeFile("output/backtest.csv", csv);
-
-  return { criteria, byGrade, trades };
+  const criteria={"MERAH_-1%_SAMPAI_0%":summarize(trades.filter(x=>x.criterion==='MERAH_-1%_SAMPAI_0%')),"CLOSE_>=_0%":summarize(trades.filter(x=>x.criterion==='CLOSE_>=_0%')),ALL:summarize(trades)};
+  const byGrade={}; for(const grade of ['A+','A','B']) byGrade[grade]={"MERAH_-1%_SAMPAI_0%":summarize(trades.filter(x=>x.entryGrade===grade&&x.criterion==='MERAH_-1%_SAMPAI_0%')),"CLOSE_>=_0%":summarize(trades.filter(x=>x.entryGrade===grade&&x.criterion==='CLOSE_>=_0%'))};
+  const grouped={}; for(const t of trades)(grouped[t.ticker]??=[]).push(t);
+  const stockSummary=Object.entries(grouped).map(([ticker,rows])=>({ticker,trades:rows.length,tp1Hit:rows.filter(x=>x.tp1Hit).length,recoveryTrades:rows.filter(x=>x.recoveryStatus==='RECOVERY'||x.recoveryStatus==='RECOVERY_TP2').length,averageDownTrades:rows.filter(x=>x.adCount>0).length,winRateTP1:rows.length?rows.filter(x=>x.tp1Hit).length/rows.length*100:0,recoveryRate:(()=>{const a=rows.filter(x=>x.adCount>0);return a.length?rows.filter(x=>x.adCount>0&&(x.recoveryStatus==='RECOVERY'||x.recoveryStatus==='RECOVERY_TP2')).length/a.length*100:0})(),avgReturnPct:average(rows.map(x=>x.finalReturnPct)),avgMaxDrawdownPct:average(rows.map(x=>x.maxDrawdownPct)),avgDaysToRecovery:(()=>{const a=rows.filter(x=>Number.isFinite(x.daysToRecovery)).map(x=>x.daysToRecovery);return a.length?average(a):null})(),avgDaysToTP1:(()=>{const a=rows.filter(x=>Number.isFinite(x.daysToTP1)).map(x=>x.daysToTP1);return a.length?average(a):null})(),avgDaysToTP2:(()=>{const a=rows.filter(x=>Number.isFinite(x.daysToTP2)).map(x=>x.daysToTP2);return a.length?average(a):null})()})).sort((a,b)=>b.avgReturnPct-a.avgReturnPct);
+  await fs.mkdir('output',{recursive:true});
+  await fs.writeFile('output/backtest.json',JSON.stringify({generatedAt:new Date().toISOString(),version:'V65_ADAPTIVE_RECOVERY',lookbackSignalDays:CFG.BACKTEST_DAYS,horizonDays:CFG.BACKTEST_HORIZON_DAYS,targets:{tp1Pct:CFG.RECOVERY_TP1_PCT,tp2Pct:CFG.RECOVERY_TP2_PCT,ad1DrawdownPct:CFG.RECOVERY_AD1_DD_PCT,ad2DrawdownPct:CFG.RECOVERY_AD2_DD_PCT,maxRecoveryDrawdownPct:CFG.RECOVERY_MAX_DD_PCT,maxAD:CFG.RECOVERY_MAX_AD},noLookahead:true,criteria,byGrade,stockSummary,trades},null,2));
+  const headers=['tradeId','ticker','signalDate','criterion','changePct','pfs','eas','trendScore','timingScore','entryScore','entryDecision','entryGrade','trendQuality','entry','initialAveragePrice','finalAveragePrice','totalUnits','adCount','adEvents','tp1','tp2','tp1Hit','tp2Hit','tp1HitDay','tp2HitDay','recoveryDay','breakevenDay','failedDay','exitDay','exitDate','exitPrice','exitReason','recoveryStatus','daysToRecovery','daysToBEP','daysToTP1','daysToTP2','maxGainPct','maxDrawdownPct','lowestPrice','highestPrice','finalReturnPct'];
+  const esc=v=>`"${String(v??'').replaceAll('"','""')}"`;
+  await fs.writeFile('output/backtest.csv',[headers.join(','),...trades.map(t=>headers.map(h=>esc(h==='adEvents'?JSON.stringify(t[h]||[]):t[h])).join(','))].join('\n')+'\n');
+  const sh=['ticker','trades','tp1Hit','recoveryTrades','averageDownTrades','winRateTP1','recoveryRate','avgReturnPct','avgMaxDrawdownPct','avgDaysToRecovery','avgDaysToTP1','avgDaysToTP2'];
+  await fs.writeFile('output/backtest_per_saham.csv',[sh.join(','),...stockSummary.map(t=>sh.map(h=>esc(t[h])).join(','))].join('\n')+'\n');
+  return {criteria,byGrade,stockSummary,trades};
 }
 
-
-
 // ============================================================
-// V64.4 TELEGRAM BACKTEST CONTROLLER
+// V65 ADAPTIVE RECOVERY TELEGRAM BACKTEST CONTROLLER
 // Server mode lama: BOT_MODE=1 node scanner.js
 // GitHub Actions mode: TELEGRAM_ONESHOT=1 node scanner.js
 // Perintah: /backtest, /backtest_merah, /backtest_hijau,
@@ -1221,30 +1170,27 @@ async function sendTelegramTo(chatId, message) {
 
 function commandHelp() {
   return [
-    "🤖 PFS BACKTEST CONTROLLER V64",
+    "🤖 PFS BACKTEST CONTROLLER V65",
     "━━━━━━━━━━━━━━━━━━━━",
     "/backtest — jalankan backtest lengkap",
     "/backtest_merah — hanya close -1% s/d <0%",
     "/backtest_hijau — hanya close >=0%",
     "/backtest_status — cek proses berjalan",
-    "/backtest_hasil — hasil backtest terakhir",
+    "/backtest_hasil — ringkasan backtest terakhir",
+    "/backtest_detail KODE — detail per saham",
     "/screening — jalankan screening IDX",
     "/help — daftar perintah",
     "━━━━━━━━━━━━━━━━━━━━",
-    `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D`,
+    `TP1 +${CFG.RECOVERY_TP1_PCT}% | TP2 +${CFG.RECOVERY_TP2_PCT}% | AD1 -${CFG.RECOVERY_AD1_DD_PCT}% | AD2 -${CFG.RECOVERY_AD2_DD_PCT}% | MAX DD -${CFG.RECOVERY_MAX_DD_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D`,
   ].join("\n");
 }
 
 function formatBacktestCriterion(label, x) {
-  return [
-    label,
-    `Sinyal       : ${x.signals}`,
-    `TP1 Hit      : ${x.tp1Hit} | WR: ${x.tp1WinRate.toFixed(1)}%`,
-    `TP2 Hit      : ${x.tp2Hit} | WR: ${x.tp2WinRate.toFixed(1)}%`,
-    `SL           : ${x.slHit} | Rate: ${x.slRate.toFixed(1)}%`,
-    `Avg Max Gain : ${x.avgMaxGainPct.toFixed(2)}%`,
-    `Avg Max DD   : ${x.avgMaxDrawdownPct.toFixed(2)}%`,
-  ].join("\n");
+  return [label,`Sinyal       : ${x.signals}`,`TP1 Hit      : ${x.tp1Hit} | WR: ${x.tp1WinRate.toFixed(1)}%`,`TP2 Hit      : ${x.tp2Hit} | WR: ${x.tp2WinRate.toFixed(1)}%`,`Recovery     : ${x.recovery} | Rate: ${x.recoveryRate.toFixed(1)}%`,`AD Trades    : ${x.averageDownTrades} | AD Success: ${x.averageDownSuccessRate.toFixed(1)}%`,`Failed       : ${x.failedRecovery} | Rate: ${x.failedRate.toFixed(1)}%`,`Avg Return   : ${x.avgFinalReturnPct.toFixed(2)}%`,`Avg Max DD   : ${x.avgMaxDrawdownPct.toFixed(2)}%`,`Avg Recovery : ${x.avgDaysToRecovery==null?"-":x.avgDaysToRecovery.toFixed(1)+"D"}`,`Avg TP1/TP2  : ${x.avgDaysToTP1==null?"-":x.avgDaysToTP1.toFixed(1)+"D"} / ${x.avgDaysToTP2==null?"-":x.avgDaysToTP2.toFixed(1)+"D"}`].join("\n");
+}
+
+function formatTradeDetail(t) {
+  return [`📌 ${t.ticker} | ${t.signalDate}`,`Entry       : ${formatPrice(t.entry)} | PFS ${t.pfs}`,`Timing/Trend/Entry : ${t.timingScore}/${t.trendScore}/${t.entryScore}`,`Grade       : ${t.entryGrade} | ${t.criterion}`,`AD          : ${t.adCount}x | Avg akhir ${formatPrice(t.finalAveragePrice)}`,...(t.adEvents||[]).map(a=>`  AD${a.number} D+${a.day} ${a.date} @ ${formatPrice(a.price)} | RS ${a.recoveryScore}`),`Recovery    : ${t.daysToRecovery==null?"-":"D+"+t.daysToRecovery}`,`BEP         : ${t.daysToBEP==null?"-":"D+"+t.daysToBEP}`,`TP1         : ${t.tp1HitDay==null?"-":"D+"+t.tp1HitDay}`,`TP2         : ${t.tp2HitDay==null?"-":"D+"+t.tp2HitDay}`,`Max DD      : ${t.maxDrawdownPct.toFixed(2)}%`,`Exit        : D+${t.exitDay} ${t.exitDate} @ ${formatPrice(t.exitPrice)}`,`Status      : ${t.recoveryStatus} | Return ${t.finalReturnPct.toFixed(2)}%`].join("\n");
 }
 
 async function getBacktestDataAndRun() {
@@ -1277,7 +1223,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
     "⏳ BACKTEST DIMULAI\n\n" +
     "🔴 Kriteria 1: Close -1% s/d <0%\n" +
     "🟢 Kriteria 2: Close >=0%\n\n" +
-    `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}%\n` +
+    `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
     `Horizon: ${CFG.BACKTEST_HORIZON_DAYS} hari\n\n` +
     "Server sedang menghitung..."
   );
@@ -1288,7 +1234,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
     const green = result.criteria["CLOSE_>=_0%"];
     const selected = mode === "red" ? red : mode === "green" ? green : null;
 
-    let message = "🧪 BACKTEST SELESAI — V64\n━━━━━━━━━━━━━━━━━━━━\n";
+    let message = "🧪 BACKTEST SELESAI — V65 ADAPTIVE RECOVERY\n━━━━━━━━━━━━━━━━━━━━\n";
     if (selected) {
       message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE -1% s/d <0%" : "🟢 CLOSE >=0%", selected);
     } else {
@@ -1298,7 +1244,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
           ? `🏆 TP1 WIN RATE TERBAIK: 🔴 MERAH (${red.tp1WinRate.toFixed(1)}%)`
           : `🏆 TP1 WIN RATE TERBAIK: 🟢 HIJAU (${green.tp1WinRate.toFixed(1)}%)`);
     }
-    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 Hasil tersimpan di output/backtest.json dan output/backtest.csv";
+    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 JSON: output/backtest.json\n📄 CSV: output/backtest.csv\n📊 Per saham: output/backtest_per_saham.csv";
     await sendTelegramTo(chatId, message);
   } catch (error) {
     await sendTelegramTo(chatId, `❌ BACKTEST GAGAL\n\n${error.message}`);
@@ -1371,7 +1317,7 @@ async function telegramBotOneShot() {
   const initCutoff = Math.floor(Date.now() / 1000) - 15 * 60;
   const allowedCommands = new Set([
     "/help", "/start", "/backtest", "/backtest_merah", "/backtest_hijau",
-    "/backtest_status", "/backtest_hasil", "/screening"
+    "/backtest_status", "/backtest_hasil", "/backtest_detail", "/screening"
   ]);
   const recognized = [];
 
@@ -1418,6 +1364,11 @@ async function telegramBotOneShot() {
       );
     } else if (cmd.command === "/screening") {
       await runTelegramScreeningCommand(cmd.chatId);
+    } else if (cmd.command === "/backtest_detail") {
+      const parts=(updates.find(u=>u.update_id===cmd.updateId)?.message?.text||"").trim().split(/\s+/);
+      const ticker=String(parts[1]||"").toUpperCase().replace(/\.JK$/i,"");
+      if(!ticker) await sendTelegramTo(cmd.chatId,"Gunakan: /backtest_detail KODE\nContoh: /backtest_detail MAYA");
+      else { try { const raw=await fs.readFile("output/backtest.json","utf8"); const data=JSON.parse(raw); const rows=(data.trades||[]).filter(x=>String(x.ticker).toUpperCase()===ticker); if(!rows.length) await sendTelegramTo(cmd.chatId,`⚠️ Tidak ada trade historis untuk ${ticker}.`); else { let text=`📊 DETAIL BACKTEST ${ticker}\n━━━━━━━━━━━━━━━━━━━━\n`; for(const t of rows.slice(-20)){ const b=formatTradeDetail(t)+"\n━━━━━━━━━━━━━━━━━━━━\n"; if((text+b).length>3500){await sendTelegramTo(cmd.chatId,text);text="";} text+=b;} if(text) await sendTelegramTo(cmd.chatId,text); } } catch(_) { await sendTelegramTo(cmd.chatId,"⚠️ Belum ada output/backtest.json. Jalankan /backtest terlebih dahulu."); } }
     } else if (cmd.command === "/backtest_hasil") {
       try {
         const raw = await fs.readFile("output/backtest.json", "utf8");
@@ -1454,7 +1405,7 @@ async function telegramBotLoop() {
     console.error("Gagal inisialisasi Telegram bot:", e.message);
   }
 
-  await sendTelegram("🤖 PFS V64 BACKTEST CONTROLLER AKTIF\nKetik /help untuk melihat perintah.");
+  await sendTelegram("🤖 PFS V65 ADAPTIVE RECOVERY BACKTEST CONTROLLER AKTIF\nKetik /help untuk melihat perintah.");
   console.log("Telegram Backtest Controller aktif. Menunggu perintah...");
 
   while (true) {
@@ -1484,6 +1435,10 @@ async function telegramBotLoop() {
           );
         } else if (command === "/screening") {
           await runTelegramScreeningCommand(chatId);
+        } else if (command === "/backtest_detail") {
+          const ticker=String(msg.text.trim().split(/\s+/)[1]||"").toUpperCase().replace(/\.JK$/i,"");
+          if(!ticker) await sendTelegramTo(chatId,"Gunakan: /backtest_detail KODE\nContoh: /backtest_detail MAYA");
+          else { try { const raw=await fs.readFile("output/backtest.json","utf8"); const data=JSON.parse(raw); const rows=(data.trades||[]).filter(x=>String(x.ticker).toUpperCase()===ticker); if(!rows.length) await sendTelegramTo(chatId,`⚠️ Tidak ada trade historis untuk ${ticker}.`); else { let text=`📊 DETAIL BACKTEST ${ticker}\n━━━━━━━━━━━━━━━━━━━━\n`; for(const t of rows.slice(-20)){ const b=formatTradeDetail(t)+"\n━━━━━━━━━━━━━━━━━━━━\n"; if((text+b).length>3500){await sendTelegramTo(chatId,text);text="";} text+=b;} if(text) await sendTelegramTo(chatId,text); } } catch(_) { await sendTelegramTo(chatId,"⚠️ Belum ada output/backtest.json. Jalankan /backtest terlebih dahulu."); } }
         } else if (command === "/backtest_hasil") {
           try {
             const raw = await fs.readFile("output/backtest.json", "utf8");
@@ -1539,7 +1494,7 @@ async function main() {
 
   let backtest = null;
   if (runBacktest) {
-    // V64 BACKTEST: dijalankan dari data historis yang sama, tanpa look-ahead.
+    // V65 ADAPTIVE RECOVERY BACKTEST: dijalankan dari data historis yang sama, tanpa look-ahead.
     console.log("Menjalankan backtest 2 kriteria close...");
     backtest = await runBacktest(fetched, ihsg);
     console.log("Backtest selesai:", JSON.stringify(backtest.criteria, null, 2));
@@ -1767,10 +1722,11 @@ async function main() {
     const btRed = backtest.criteria["MERAH_-1%_SAMPAI_0%"];
     const btGreen = backtest.criteria["CLOSE_>=_0%"];
     telegramText +=
-      "\n🧪 BACKTEST V64 - 2 KRITERIA\n" +
-      `Target : TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
-      `🔴 MERAH -1% s/d <0% : ${btRed.signals} sinyal | TP1 WR ${btRed.tp1WinRate.toFixed(1)}% | TP2 WR ${btRed.tp2WinRate.toFixed(1)}% | SL ${btRed.slRate.toFixed(1)}%\n` +
-      `🟢 CLOSE >=0%        : ${btGreen.signals} sinyal | TP1 WR ${btGreen.tp1WinRate.toFixed(1)}% | TP2 WR ${btGreen.tp2WinRate.toFixed(1)}% | SL ${btGreen.slRate.toFixed(1)}%\n` +
+      "\n🧪 BACKTEST V65 ADAPTIVE RECOVERY - 2 KRITERIA\n" +
+      `Target : TP1 +${CFG.RECOVERY_TP1_PCT}% | TP2 +${CFG.RECOVERY_TP2_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
+       `AD : D1 -${CFG.RECOVERY_AD1_DD_PCT}% | D2 -${CFG.RECOVERY_AD2_DD_PCT}% | Max DD -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
+      `🔴 MERAH -1% s/d <0% : ${btRed.signals} | TP1 ${btRed.tp1WinRate.toFixed(1)}% | TP2 ${btRed.tp2WinRate.toFixed(1)}% | REC ${btRed.recoveryRate.toFixed(1)}% | AD ${btRed.averageDownSuccessRate.toFixed(1)}%\n` +
+      `🟢 CLOSE >=0%        : ${btGreen.signals} | TP1 ${btGreen.tp1WinRate.toFixed(1)}% | TP2 ${btGreen.tp2WinRate.toFixed(1)}% | REC ${btGreen.recoveryRate.toFixed(1)}% | AD ${btGreen.averageDownSuccessRate.toFixed(1)}%\n` +
       "━━━━━━━━━━━━━━━━━━━━\n";
   }
 

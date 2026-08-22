@@ -1,5 +1,5 @@
-// PFS Scanner V64.1 - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
-// FIX V64.1: header is valid JavaScript comments; no plain-text title outside comments.
+// PFS Scanner V64.2 FAST - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
+// FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
 //
@@ -75,9 +75,10 @@ const CFG = {
   VOLATILITY_MIN_ATR_PCT: 1.00,
   VOLATILITY10_STRONG_PCT: 2.50,
   VOLATILITY10_MIN_PCT: 1.50,
-  CONCURRENCY: 8,
-  RETRIES: 2,
-  RETRY_DELAY_MS: 700,
+  // V64.2 FAST: faster fetch while keeping the full universe intact.
+  CONCURRENCY: 12,
+  RETRIES: 1,
+  RETRY_DELAY_MS: 500,
 };
 
 const USER_AGENT =

@@ -1,4 +1,4 @@
-// PFS Scanner V62 STRICT - PFS + EAS + Timing + Trend + Entry Decision
+/ PFS Scanner V64 - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
 //
@@ -58,6 +58,14 @@ const CFG = {
   QUALIFY_MIN_TIMING: 55,
   QUALIFY_MIN_ENTRY: 70,
   REQUIRE_UPTREND: true,
+
+  // V64 BACKTEST + TELEGRAM CONTROLLER
+  BACKTEST_DAYS: 120,
+  BACKTEST_HORIZON_DAYS: 10,
+  BACKTEST_TP1_PCT: 3.0,
+  BACKTEST_TP2_PCT: 6.0,
+  BACKTEST_SL_PCT: 3.0,
+  BACKTEST_MIN_BARS: 80,
 
   MAX_RESULTS: 50,
   DISPLAY_DAYS: 20,
@@ -962,6 +970,390 @@ function toCSV(rows) {
   return lines.join("\n") + "\n";
 }
 
+
+function strictPassForBacktest(pfs, eas, trendScore, timingScore, entryScore, trendQuality) {
+  return (
+    pfs >= CFG.QUALIFY_MIN_PFS &&
+    eas >= CFG.QUALIFY_MIN_EAS &&
+    trendScore >= CFG.QUALIFY_MIN_TREND &&
+    timingScore >= CFG.QUALIFY_MIN_TIMING &&
+    entryScore >= CFG.QUALIFY_MIN_ENTRY &&
+    (!CFG.REQUIRE_UPTREND || trendQuality === "UPTREND")
+  );
+}
+
+function classifyBacktestClose(changePct) {
+  const c = Number(changePct);
+  if (!Number.isFinite(c)) return null;
+  // Kriteria 1: candle merah, tetapi minus tidak lebih dari 1%.
+  if (c >= -1.0 && c < 0) return "MERAH_-1%_SAMPAI_0%";
+  // Kriteria 2: close harian nol atau positif.
+  if (c >= 0) return "CLOSE_>=_0%";
+  // Lebih merah dari -1% tidak masuk dua kelompok ini.
+  return null;
+}
+
+function evaluateForwardOutcome(stock, entryIndex) {
+  const entry = Number(stock[entryIndex]?.close);
+  if (!Number.isFinite(entry) || entry <= 0) return null;
+
+  const tp1 = entry * (1 + CFG.BACKTEST_TP1_PCT / 100);
+  const tp2 = entry * (1 + CFG.BACKTEST_TP2_PCT / 100);
+  const sl = entry * (1 - CFG.BACKTEST_SL_PCT / 100);
+  const end = Math.min(stock.length - 1, entryIndex + CFG.BACKTEST_HORIZON_DAYS);
+
+  let tp1HitDay = null;
+  let tp2HitDay = null;
+  let slHitDay = null;
+  let firstOutcome = "EXPIRED";
+
+  for (let j = entryIndex + 1; j <= end; j++) {
+    const bar = stock[j];
+    const high = Number(bar.high);
+    const low = Number(bar.low);
+    if (!Number.isFinite(high) || !Number.isFinite(low)) continue;
+
+    // Jika TP dan SL tersentuh pada candle yang sama, kita pakai asumsi konservatif:
+    // SL dianggap terjadi lebih dulu karena urutan intraday tidak diketahui dari data 1D.
+    if (slHitDay === null && low <= sl) {
+      slHitDay = j - entryIndex;
+      if (firstOutcome === "EXPIRED") firstOutcome = "SL";
+    }
+    if (tp1HitDay === null && high >= tp1) {
+      tp1HitDay = j - entryIndex;
+      if (firstOutcome === "EXPIRED" && slHitDay === null) firstOutcome = "TP1";
+    }
+    if (tp2HitDay === null && high >= tp2) {
+      tp2HitDay = j - entryIndex;
+    }
+  }
+
+  const lastClose = Number(stock[end]?.close ?? entry);
+  const maxHigh = Math.max(...stock.slice(entryIndex + 1, end + 1).map(x => Number(x.high) || 0), entry);
+  const minLow = Math.min(...stock.slice(entryIndex + 1, end + 1).map(x => Number(x.low) || entry), entry);
+
+  return {
+    entry,
+    tp1,
+    tp2,
+    sl,
+    horizon: end - entryIndex,
+    tp1Hit: tp1HitDay !== null,
+    tp2Hit: tp2HitDay !== null,
+    slHit: slHitDay !== null,
+    tp1HitDay,
+    tp2HitDay,
+    slHitDay,
+    firstOutcome,
+    lastClose,
+    maxGainPct: ((maxHigh / entry) - 1) * 100,
+    maxDrawdownPct: ((minLow / entry) - 1) * 100,
+  };
+}
+
+async function runBacktest(fetched, ihsg) {
+  const trades = [];
+  const perStock = [];
+
+  for (const item of fetched) {
+    if (item?.error || !item.stock || item.stock.length < CFG.BACKTEST_MIN_BARS + CFG.BACKTEST_HORIZON_DAYS) continue;
+    const ticker = item.ticker;
+    const stock = item.stock;
+    const lastSignalIndex = stock.length - CFG.BACKTEST_HORIZON_DAYS - 1;
+    const firstSignalIndex = Math.max(CFG.BACKTEST_MIN_BARS - 1, lastSignalIndex - CFG.BACKTEST_DAYS + 1);
+
+    for (let i = firstSignalIndex; i <= lastSignalIndex; i++) {
+      const histStock = stock.slice(0, i + 1);
+      const signalBar = histStock.at(-1);
+      const prevBar = histStock.at(-2);
+      if (!signalBar || !prevBar) continue;
+
+      const changePct = prevBar.close ? ((signalBar.close / prevBar.close) - 1) * 100 : null;
+      const criterion = classifyBacktestClose(changePct);
+      if (!criterion) continue;
+
+      // Anti-lookahead: indikator hanya melihat data sampai hari sinyal.
+      const histIHSG = ihsg.filter(x => x.date <= signalBar.date);
+      if (histIHSG.length < CFG.BACKTEST_MIN_BARS) continue;
+
+      try {
+        const calc = calculateIndicators(histStock, histIHSG);
+        const s = screenScore(histStock, calc);
+        const eas = calculateEarlyAccumulationScore(histStock, calc);
+        const trendScore = calculateTrendScore(histStock, calc, s);
+        const timingScore = calculateTimingScore(histStock, calc, s);
+        const entry = calculateEntryDecision(s.score, eas.score, trendScore, timingScore);
+        const trendQuality = s.trendQuality;
+
+        if (!strictPassForBacktest(s.score, eas.score, trendScore, timingScore, entry.entryScore, trendQuality)) continue;
+
+        const outcome = evaluateForwardOutcome(stock, i);
+        if (!outcome) continue;
+
+        trades.push({
+          ticker,
+          signalDate: dateKey(signalBar.date),
+          criterion,
+          changePct,
+          pfs: s.score,
+          eas: eas.score,
+          trendScore,
+          timingScore,
+          entryScore: entry.entryScore,
+          entryDecision: entry.entryDecision,
+          entryGrade: entry.entryGrade,
+          trendQuality,
+          ...outcome,
+        });
+      } catch (error) {
+        // Satu hari gagal tidak menghentikan seluruh backtest.
+      }
+    }
+  }
+
+  const summarize = (rows) => {
+    const count = rows.length;
+    const tp1 = rows.filter(x => x.tp1Hit).length;
+    const tp2 = rows.filter(x => x.tp2Hit).length;
+    const sl = rows.filter(x => x.slHit).length;
+    const tp1BeforeSL = rows.filter(x => x.tp1Hit && (x.tp1HitDay ?? 999) < (x.slHitDay ?? 999)).length;
+    const tp2BeforeSL = rows.filter(x => x.tp2Hit && (x.tp2HitDay ?? 999) < (x.slHitDay ?? 999)).length;
+    const avgMaxGain = count ? average(rows.map(x => x.maxGainPct)) : 0;
+    const avgMaxDD = count ? average(rows.map(x => x.maxDrawdownPct)) : 0;
+    return {
+      signals: count,
+      tp1Hit: tp1,
+      tp1WinRate: count ? (tp1BeforeSL / count) * 100 : 0,
+      tp2Hit: tp2,
+      tp2WinRate: count ? (tp2BeforeSL / count) * 100 : 0,
+      slHit: sl,
+      slRate: count ? (sl / count) * 100 : 0,
+      avgMaxGainPct: avgMaxGain,
+      avgMaxDrawdownPct: avgMaxDD,
+    };
+  };
+
+  const criteria = {
+    "MERAH_-1%_SAMPAI_0%": summarize(trades.filter(x => x.criterion === "MERAH_-1%_SAMPAI_0%")),
+    "CLOSE_>=_0%": summarize(trades.filter(x => x.criterion === "CLOSE_>=_0%")),
+    ALL: summarize(trades),
+  };
+
+  const byGrade = {};
+  for (const grade of ["A+", "A", "B"]) {
+    byGrade[grade] = {
+      "MERAH_-1%_SAMPAI_0%": summarize(trades.filter(x => x.entryGrade === grade && x.criterion === "MERAH_-1%_SAMPAI_0%")),
+      "CLOSE_>=_0%": summarize(trades.filter(x => x.entryGrade === grade && x.criterion === "CLOSE_>=_0%")),
+    };
+  }
+
+  await fs.writeFile("output/backtest.json", JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    lookbackSignalDays: CFG.BACKTEST_DAYS,
+    horizonDays: CFG.BACKTEST_HORIZON_DAYS,
+    targets: { tp1Pct: CFG.BACKTEST_TP1_PCT, tp2Pct: CFG.BACKTEST_TP2_PCT, slPct: CFG.BACKTEST_SL_PCT },
+    noLookahead: true,
+    criteria,
+    byGrade,
+    trades,
+  }, null, 2));
+
+  const headers = ["ticker","signalDate","criterion","changePct","pfs","eas","trendScore","timingScore","entryScore","entryDecision","entryGrade","trendQuality","entry","tp1","tp2","sl","tp1Hit","tp2Hit","slHit","tp1HitDay","tp2HitDay","slHitDay","firstOutcome","lastClose","maxGainPct","maxDrawdownPct"];
+  const csvEsc = v => `"${String(v ?? "").replaceAll('"','""')}"`;
+  const csv = [headers.join(","), ...trades.map(t => headers.map(h => csvEsc(t[h])).join(","))].join("\n") + "\n";
+  await fs.writeFile("output/backtest.csv", csv);
+
+  return { criteria, byGrade, trades };
+}
+
+
+
+// ============================================================
+// V64 TELEGRAM BACKTEST CONTROLLER
+// Jalankan server dengan: BOT_MODE=1 node scanner.js
+// Perintah: /backtest, /backtest_merah, /backtest_hijau,
+//           /backtest_status, /backtest_hasil, /help
+// ============================================================
+let BACKTEST_RUNNING = false;
+let LAST_BACKTEST_AT = null;
+
+async function telegramApi(method, body = {}) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN belum diatur.");
+  const url = `https://api.telegram.org/bot${token}/${method}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!result.ok) throw new Error(result.description || `Telegram API ${method} gagal`);
+  return result.result;
+}
+
+async function sendTelegramTo(chatId, message) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !chatId) return;
+  const TELEGRAM_LIMIT = 3800;
+  for (let i = 0; i < message.length; i += TELEGRAM_LIMIT) {
+    await telegramApi("sendMessage", {
+      chat_id: chatId,
+      text: message.substring(i, i + TELEGRAM_LIMIT),
+    });
+  }
+}
+
+function commandHelp() {
+  return [
+    "🤖 PFS BACKTEST CONTROLLER V64",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "/backtest — jalankan backtest lengkap",
+    "/backtest_merah — hanya close -1% s/d <0%",
+    "/backtest_hijau — hanya close >=0%",
+    "/backtest_status — cek proses berjalan",
+    "/backtest_hasil — hasil backtest terakhir",
+    "/help — daftar perintah",
+    "━━━━━━━━━━━━━━━━━━━━",
+    `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D`,
+  ].join("\n");
+}
+
+function formatBacktestCriterion(label, x) {
+  return [
+    label,
+    `Sinyal       : ${x.signals}`,
+    `TP1 Hit      : ${x.tp1Hit} | WR: ${x.tp1WinRate.toFixed(1)}%`,
+    `TP2 Hit      : ${x.tp2Hit} | WR: ${x.tp2WinRate.toFixed(1)}%`,
+    `SL           : ${x.slHit} | Rate: ${x.slRate.toFixed(1)}%`,
+    `Avg Max Gain : ${x.avgMaxGainPct.toFixed(2)}%`,
+    `Avg Max DD   : ${x.avgMaxDrawdownPct.toFixed(2)}%`,
+  ].join("\n");
+}
+
+async function getBacktestDataAndRun() {
+  const symbols = await loadSymbols();
+  if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
+  const ihsg = await fetchYahooHistory("^JKSE");
+  if (ihsg.length < CFG.MIN_BARS) throw new Error(`Data IHSG tidak cukup: ${ihsg.length} baris.`);
+
+  const fetched = await mapConcurrent(
+    symbols,
+    async (ticker) => {
+      const yahooSymbol = ticker.endsWith(".JK") ? ticker : `${ticker}.JK`;
+      const stock = await fetchYahooHistory(yahooSymbol);
+      return { ticker: ticker.replace(/\.JK$/i, ""), stock };
+    },
+    CFG.CONCURRENCY
+  );
+  return runBacktest(fetched, ihsg);
+}
+
+async function runTelegramBacktestCommand(chatId, mode) {
+  if (BACKTEST_RUNNING) {
+    await sendTelegramTo(chatId, "⏳ BACKTEST MASIH BERJALAN.\nGunakan /backtest_status untuk mengecek proses.");
+    return;
+  }
+
+  BACKTEST_RUNNING = true;
+  LAST_BACKTEST_AT = new Date();
+  await sendTelegramTo(chatId,
+    "⏳ BACKTEST DIMULAI\n\n" +
+    "🔴 Kriteria 1: Close -1% s/d <0%\n" +
+    "🟢 Kriteria 2: Close >=0%\n\n" +
+    `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}%\n` +
+    `Horizon: ${CFG.BACKTEST_HORIZON_DAYS} hari\n\n` +
+    "Server sedang menghitung..."
+  );
+
+  try {
+    const result = await getBacktestDataAndRun();
+    const red = result.criteria["MERAH_-1%_SAMPAI_0%"];
+    const green = result.criteria["CLOSE_>=_0%"];
+    const selected = mode === "red" ? red : mode === "green" ? green : null;
+
+    let message = "🧪 BACKTEST SELESAI — V64\n━━━━━━━━━━━━━━━━━━━━\n";
+    if (selected) {
+      message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE -1% s/d <0%" : "🟢 CLOSE >=0%", selected);
+    } else {
+      message += formatBacktestCriterion("🔴 CLOSE -1% s/d <0%", red) + "\n\n" +
+        formatBacktestCriterion("🟢 CLOSE >=0%", green) + "\n\n" +
+        (red.tp1WinRate >= green.tp1WinRate
+          ? `🏆 TP1 WIN RATE TERBAIK: 🔴 MERAH (${red.tp1WinRate.toFixed(1)}%)`
+          : `🏆 TP1 WIN RATE TERBAIK: 🟢 HIJAU (${green.tp1WinRate.toFixed(1)}%)`);
+    }
+    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 Hasil tersimpan di output/backtest.json dan output/backtest.csv";
+    await sendTelegramTo(chatId, message);
+  } catch (error) {
+    await sendTelegramTo(chatId, `❌ BACKTEST GAGAL\n\n${error.message}`);
+  } finally {
+    BACKTEST_RUNNING = false;
+  }
+}
+
+async function telegramBotLoop() {
+  if (!process.env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN belum diatur.");
+  const allowedChatId = process.env.TELEGRAM_CHAT_ID ? String(process.env.TELEGRAM_CHAT_ID) : null;
+  let offset = 0;
+
+  // Abaikan pesan lama agar server tidak mengeksekusi perintah tertunda saat pertama hidup.
+  try {
+    const old = await telegramApi("getUpdates", { timeout: 0, limit: 100 });
+    if (old.length) offset = old[old.length - 1].update_id + 1;
+  } catch (e) {
+    console.error("Gagal inisialisasi Telegram bot:", e.message);
+  }
+
+  await sendTelegram("🤖 PFS V64 BACKTEST CONTROLLER AKTIF\nKetik /help untuk melihat perintah.");
+  console.log("Telegram Backtest Controller aktif. Menunggu perintah...");
+
+  while (true) {
+    try {
+      const updates = await telegramApi("getUpdates", { offset, timeout: 30, limit: 20 });
+      for (const update of updates) {
+        offset = update.update_id + 1;
+        const msg = update.message;
+        if (!msg?.text) continue;
+        const chatId = String(msg.chat.id);
+        if (allowedChatId && chatId !== allowedChatId) continue;
+
+        const command = msg.text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
+        if (command === "/help" || command === "/start") {
+          await sendTelegramTo(chatId, commandHelp());
+        } else if (command === "/backtest") {
+          void runTelegramBacktestCommand(chatId, "all");
+        } else if (command === "/backtest_merah") {
+          void runTelegramBacktestCommand(chatId, "red");
+        } else if (command === "/backtest_hijau") {
+          void runTelegramBacktestCommand(chatId, "green");
+        } else if (command === "/backtest_status") {
+          await sendTelegramTo(chatId,
+            BACKTEST_RUNNING
+              ? "⏳ BACKTEST SEDANG BERJALAN..."
+              : `✅ SERVER SIAP. Backtest terakhir: ${LAST_BACKTEST_AT ? LAST_BACKTEST_AT.toLocaleString("id-ID") : "belum ada sejak server aktif"}`
+          );
+        } else if (command === "/backtest_hasil") {
+          try {
+            const raw = await fs.readFile("output/backtest.json", "utf8");
+            const data = JSON.parse(raw);
+            const red = data.criteria["MERAH_-1%_SAMPAI_0%"];
+            const green = data.criteria["CLOSE_>=_0%"];
+            await sendTelegramTo(chatId,
+              "📊 HASIL BACKTEST TERAKHIR\n━━━━━━━━━━━━━━━━━━━━\n" +
+              formatBacktestCriterion("🔴 MERAH -1% s/d <0%", red) + "\n\n" +
+              formatBacktestCriterion("🟢 CLOSE >=0%", green)
+            );
+          } catch (e) {
+            await sendTelegramTo(chatId, "⚠️ Belum ada hasil backtest. Jalankan /backtest terlebih dahulu.");
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Telegram polling error:", error.message);
+      await sleep(3000);
+    }
+  }
+}
+
 async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
@@ -989,6 +1381,11 @@ async function main() {
     },
     CFG.CONCURRENCY
   );
+
+  // V63 BACKTEST: dijalankan dari data historis yang sama, tanpa look-ahead.
+  console.log("Menjalankan backtest 2 kriteria close...");
+  const backtest = await runBacktest(fetched, ihsg);
+  console.log("Backtest selesai:", JSON.stringify(backtest.criteria, null, 2));
 
   const results = [];
   const errors = [];
@@ -1206,6 +1603,15 @@ async function main() {
     });
   }
 
+  const btRed = backtest.criteria["MERAH_-1%_SAMPAI_0%"];
+  const btGreen = backtest.criteria["CLOSE_>=_0%"];
+  telegramText +=
+    "\n🧪 BACKTEST V63 - 2 KRITERIA\n" +
+    `Target : TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
+    `🔴 MERAH -1% s/d <0% : ${btRed.signals} sinyal | TP1 WR ${btRed.tp1WinRate.toFixed(1)}% | TP2 WR ${btRed.tp2WinRate.toFixed(1)}% | SL ${btRed.slRate.toFixed(1)}%\n` +
+    `🟢 CLOSE >=0%        : ${btGreen.signals} sinyal | TP1 WR ${btGreen.tp1WinRate.toFixed(1)}% | TP2 WR ${btGreen.tp2WinRate.toFixed(1)}% | SL ${btGreen.slRate.toFixed(1)}%\n` +
+    "━━━━━━━━━━━━━━━━━━━━\n";
+
   const TELEGRAM_LIMIT = 3800;
   for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
     await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
@@ -1216,6 +1622,8 @@ async function main() {
   console.log(`Berhasil: ${results.length}`);
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
   console.log(`Error: ${errors.length}`);
+  console.log(`BACKTEST MERAH -1% s/d <0%: ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].signals} sinyal | TP1 WR ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].tp1WinRate.toFixed(1)}%`);
+  console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>=_0%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>=_0%"].tp1WinRate.toFixed(1)}%`);
   console.table(
     qualified.slice(0, 20).map((r) => ({
       RANK: r.rank,
@@ -1233,7 +1641,16 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("SCREENING GAGAL:", error);
-  process.exitCode = 1;
-});
+const BOT_MODE = String(process.env.BOT_MODE || "").toLowerCase();
+
+if (BOT_MODE === "1" || BOT_MODE === "true" || process.argv.includes("--bot")) {
+  telegramBotLoop().catch((error) => {
+    console.error("TELEGRAM BOT GAGAL:", error);
+    process.exitCode = 1;
+  });
+} else {
+  main().catch((error) => {
+    console.error("SCREENING GAGAL:", error);
+    process.exitCode = 1;
+  });
+}

@@ -19,8 +19,10 @@
 //   output/screening.json
 //   output/screening.csv
 //   output/errors.json
+
 import fs from "node:fs/promises";
 import path from "node:path";
+
 async function sendTelegram(message) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -31,26 +33,18 @@ async function sendTelegram(message) {
   }
 
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
-
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: message
-    })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: message })
   });
 
   const result = await response.json();
-
   if (!result.ok) {
     throw new Error(`Telegram error: ${result.description}`);
   }
-
-  console.log("Telegram berhasil dikirim");
 }
+
 const CFG = {
   LOOKBACK_DAYS: 500,
   MIN_BARS: 80,
@@ -586,71 +580,23 @@ function screenScore(stock, calc) {
 
   if (!reasons.length) reasons.push("Belum memenuhi filter utama");
 
-  // ===============================
-// TP / SL / STATUS ENTRY OTOMATIS
-// ===============================
-
-const entryPrice = x.close;
-
-// ATR14 dalam persen -> ubah menjadi nilai harga
-const atr14Value = entryPrice * (atrPct / 100);
-
-const sl = entryPrice - (atr14Value * 1.5);
-const tp1 = entryPrice + (atr14Value * 1.5);
-const tp2 = entryPrice + (atr14Value * 3.0);
-
-// Status entry berdasarkan PFS + trend + akumulasi
-let entryStatus = "WAIT";
-
-if (
-  score >= 90 &&
-  trendQuality === "UPTREND" &&
-  accumulation === "KUAT"
-) {
-  entryStatus = "ENTRY KUAT";
-} else if (
-  score >= 80 &&
-  trendQuality === "UPTREND"
-) {
-  entryStatus = "ENTRY";
-} else if (
-  score >= 70 &&
-  trendQuality !== "LEMAH"
-) {
-  entryStatus = "WATCH";
-}
-
   return {
-  score,
-  signal,
-  entryPrice,
-  tp1,
-  tp2,
-  sl,
-  entryStatus,
-
-  rsi,
-  ema50,
-  prevClose,
-  changePct,
-  volRatio,
-  atrPct,
-  atrScore: volatility10Score,
-  volatility10Pct,
-  volatility10Label,
-  trendQuality,
-  accumulationScore,
-  accumulation5d: accumulation5d.label,
-  accumulation5dScore: accumulation5d.score,
-  accumulation10d: accumulation10d.label,
-  accumulation10dScore: accumulation10d.score,
-  high20,
-  distHigh,
-  candle,
-  trend,
-  reason: reasons.join(" | ")
-};
-   
+    score, signal, rsi, ema50,
+    prevClose: prev?.close ?? null,
+    changePct: dailyChangePct,
+    volRatio, atrPct,
+    atrScore: volatility10Score,
+    volatility10Pct, volatility10Score, volatility10Label,
+    trendQuality,
+    accumulation, accumulationScore,
+    accumulation5d: accumulation5d.label,
+    accumulation5dScore: accumulation5d.score,
+    accumulation10d: accumulation10d.label,
+    accumulation10dScore: accumulation10d.score,
+    high20, distHigh,
+    candle, trend,
+    reason: reasons.join(" | "),
+  };
 }
 
 function parseYahooHistoryBody(json, symbol) {
@@ -706,63 +652,30 @@ async function fetchYahooHistory(symbol, lookbackDays = CFG.LOOKBACK_DAYS) {
     (Date.now() - lookbackDays * 24 * 60 * 60 * 1000) / 1000
   );
 
-  const hosts = [
-  "https://query1.finance.yahoo.com",
-  "https://query2.finance.yahoo.com"
-];
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    `?period1=${start}&period2=${end}&interval=1d&events=history&includeAdjustedClose=true`;
 
-let lastError = null;
-
-for (let hostIndex = 0; hostIndex < hosts.length; hostIndex++) {
-  const host = hosts[hostIndex];
-
+  let lastError = null;
   for (let attempt = 0; attempt <= CFG.RETRIES; attempt++) {
     try {
-      const url =
-        `${host}/v8/finance/chart/${encodeURIComponent(symbol)}` +
-        `?period1=${start}&period2=${end}` +
-        `&interval=1d&events=history&includeAdjustedClose=true`;
-
       const response = await fetch(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/131.0.0.0 Safari/537.36",
-          "Accept": "application/json"
-        }
+        headers: { "User-Agent": USER_AGENT, "Accept": "application/json" },
       });
-
       const body = await response.text();
 
       if (!response.ok) {
-        throw new Error(
-          `Yahoo HTTP ${response.status}: ${body.slice(0, 180)}`
-        );
+        throw new Error(`Yahoo HTTP ${response.status}: ${body.slice(0, 180)}`);
       }
 
-      const json = JSON.parse(body);
-
-      if (
-        !json.chart ||
-        !json.chart.result ||
-        !json.chart.result.length
-      ) {
-        throw new Error("Yahoo mengembalikan data chart kosong");
-      }
-
-      return parseYahooHistoryBody(json, symbol);
-
+      return parseYahooHistoryBody(JSON.parse(body), symbol);
     } catch (err) {
       lastError = err;
-
       if (attempt < CFG.RETRIES) {
         await sleep(CFG.RETRY_DELAY_MS * (attempt + 1));
       }
     }
   }
-}
-
 
   throw new Error(`${symbol}: ${lastError?.message || "Yahoo fetch gagal"}`);
 }
@@ -865,9 +778,10 @@ async function main() {
   const fetched = await mapConcurrent(
     symbols,
     async (ticker, index) => {
-     const stock = await fetchYahooHistory(ticker);
+      const yahooSymbol = ticker.endsWith(".JK") ? ticker : `${ticker}.JK`;
+      const stock = await fetchYahooHistory(yahooSymbol);
       console.log(`[${index + 1}/${symbols.length}] ${ticker} -> ${stock.length} candle`);
-      return { ticker, stock };
+      return { ticker: ticker.replace(/\.JK$/i, ""), stock };
     },
     CFG.CONCURRENCY
   );
@@ -908,6 +822,7 @@ async function main() {
         close: last.close,
         volume: last.volume,
         rsi: s.rsi,
+        rsi14: s.rsi,
         ema20: calc.latest.ema20,
         ema50: s.ema50,
         macdHist: calc.latest.macdHist,
@@ -971,167 +886,96 @@ async function main() {
 
   await fs.writeFile("output/screening.csv", toCSV(qualified));
   await fs.writeFile("output/errors.json", JSON.stringify(errors, null, 2));
-  
-// ============ TELEGRAM FULL SCREENING ============
 
-// Format angka agar rapi
-function fmtNum(value, decimals = 2) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "-";
-
-  return n.toLocaleString("en-US", {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals
-  });
-}
-
-// Format angka tanpa desimal
-function fmtInt(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "-";
-
-  return n.toLocaleString("en-US", {
-    maximumFractionDigits: 0
-  });
-}
-
-// Format persen
-function fmtPct(value, decimals = 2) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "-";
-
-  return `${n >= 0 ? "+" : ""}${n.toFixed(decimals)}%`;
-}
-
-// Format nilai yang bisa berupa angka / teks
-function fmtValue(value, decimals = 2) {
-  if (value === undefined || value === null || value === "") {
-    return "-";
-  }
-
-  const n = Number(value);
-
-  if (Number.isFinite(n)) {
-    return fmtNum(n, decimals);
-  }
-
-  return String(value);
-}
-
-const telegramHeader =
-  "📊 PFS SCREENING IDX\n" +
-  `Total saham : ${qualified.length}\n` +
-  `Minimum PFS : ${CFG.MIN_SCORE}\n` +
-  "━━━━━━━━━━━━━━━━━━━━\n\n";
-
-let telegramText = telegramHeader;
-
-qualified.forEach((r, i) => {
-
-  const signal = r.signal || "-";
-  const volatility = r.volatility || "-";
-
+  // ============ TELEGRAM FULL SCREENING ============
+  const fmtNum = (value, decimals = 2) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return n.toLocaleString("en-US", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  };
+  const fmtInt = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  };
+  const fmtPct = (value) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  };
   const cleanText = (value) => {
-  if (
-    value === undefined ||
-    value === null ||
-    value === "" ||
-    String(value).toLowerCase() === "undefined" ||
-    String(value).toLowerCase() === "null"
-  ) {
-    return "-";
+    if (value === undefined || value === null || value === "") return "-";
+    const text = String(value);
+    if (text.toLowerCase() === "undefined" || text.toLowerCase() === "null") return "-";
+    return text;
+  };
+
+  let telegramText =
+    "📊 PFS SCREENING IDX\n" +
+    `Total saham : ${qualified.length}\n` +
+    `Minimum PFS : ${CFG.MIN_SCORE}\n` +
+    `Dicek       : ${symbols.length}\n` +
+    `Berhasil    : ${results.length}\n` +
+    `Error       : ${errors.length}\n` +
+    "━━━━━━━━━━━━━━━━━━━━\n";
+
+  if (qualified.length === 0) {
+    telegramText += "\n⚠️ TIDAK ADA SAHAM LOLOS FILTER.\n";
+    if (errors.length > 0) {
+      telegramText += "\nContoh error pertama: " + errors.slice(0, 5).map(e => `${e.ticker}: ${e.error}`).join(" | ");
+    } else if (results.length > 0) {
+      const top = results.slice(0, 5).map(r => `${r.ticker}=${fmtInt(r.score)}`).join(", ");
+      telegramText += `\nTop score di bawah minimum: ${top}`;
+    }
+  } else {
+    telegramText += "\n";
+    qualified.forEach((r, i) => {
+      telegramText +=
+        `${i + 1}. ${r.ticker} | PFS ${fmtInt(r.score)} | ${r.signal || "-"}\n` +
+        `Vol       : ${cleanText(r.volatility)}\n` +
+        `Akum 1D   : ${cleanText(r.accumulation)} | Avg 1D  : ${fmtNum(r.accumulationAvg1d)}\n` +
+        `Akum 5D   : ${cleanText(r.accumulation5d)} | Avg 5D  : ${fmtNum(r.accumulationAvg5d)}\n` +
+        `Akum 10D  : ${cleanText(r.accumulation10d)} | Avg 10D: ${fmtNum(r.accumulationAvg10d)}\n` +
+        `Close     : ${fmtNum(r.close, 0)} | Chg : ${fmtPct(r.changePct)}\n` +
+        `RSI14     : ${fmtNum(r.rsi14)}\n` +
+        `EMA20     : ${fmtNum(r.ema20)}\n` +
+        `EMA50     : ${fmtNum(r.ema50)}\n` +
+        `MACD      : ${fmtNum(r.macdHist)}\n` +
+        `VOL/AVG20 : ${fmtNum(r.volRatio)}\n` +
+        `ATR14     : ${fmtPct(r.atrPct)}\n` +
+        `HIGH20    : ${fmtNum(r.high20, 0)}\n` +
+        `RSR20/60  : ${fmtInt(r.rsr20)} / ${fmtInt(r.rsr60)}\n` +
+        `CANDLE    : ${r.candle || "-"}\n` +
+        `TREND     : ${r.trend || "-"}\n` +
+        "━━━━━━━━━━━━━━━━━━━━\n";
+    });
   }
 
-  return String(value);
-};
+  const TELEGRAM_LIMIT = 3800;
+  for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
+    await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
+  }
 
-const accumulation1d = cleanText(
-  r.accumulation1d ?? r.accumulation
-);
-
-const accumulation5d = cleanText(
-  r.accumulation5d
-);
-
-const accumulation10d = cleanText(
-  r.accumulation10d
-);
-
-  const avg1d =
-    r.accumulationAvg1d ??
-    r.accumulationAvg1d ??
-    null;
-
-  const avg5d =
-    r.accumulationAvg5d ??
-    null;
-
-  const avg10d =
-    r.accumulationAvg10d ??
-    null;
-
-  const changePct = r.changePct;
-
-  telegramText +=
-    `${i + 1}. ${r.ticker} | PFS ${fmtInt(r.score)} | ${signal}\n` +
-
-    `Vol       : ${volatility}\n` +
-
-    `Akum 1D   : ${accumulation1d} | Avg 1D  : ${fmtNum(avg1d)}\n` +
-    `Akum 5D   : ${accumulation5d} | Avg 5D  : ${fmtNum(avg5d)}\n` +
-    `Akum 10D  : ${accumulation10d} | Avg 10D: ${fmtNum(avg10d)}\n` +
-
-    `Close     : ${fmtNum(r.close, 0)} | Chg : ${fmtPct(changePct)}\n` +
-
-    `RSI14     : ${fmtNum(r.rsi14)}\n` +
-    `EMA20     : ${fmtNum(r.ema20)}\n` +
-    `EMA50     : ${fmtNum(r.ema50)}\n` +
-
-    `MACD      : ${fmtNum(r.macdHist)}\n` +
-    `VOL/AVG20 : ${fmtNum(r.volRatio)}\n` +
-    `ATR14     : ${fmtPct(r.atrPct)}\n` +
-
-    `HIGH20    : ${fmtNum(r.high20, 0)}\n` +
-    `RSR20/60  : ${fmtInt(r.rsr20)} / ${fmtInt(r.rsr60)}\n` +
-
-    `CANDLE    : ${r.candle || "-"}\n` +
-    `TREND     : ${r.trend || "-"}\n` +
-
-    "━━━━━━━━━━━━━━━━━━━━\n\n";
-});
-
-// Telegram maksimal sekitar 4096 karakter.
-// Kita gunakan 3800 agar aman.
-const TELEGRAM_LIMIT = 3800;
-
-for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
-  await sendTelegram(
-    telegramText.substring(i, i + TELEGRAM_LIMIT)
-  );
-}
-
-console.log("");
-console.log("Telegram full screening berhasil dikirim.");
-  
   console.log("");
   console.log(`Selesai. Dicek: ${symbols.length}`);
   console.log(`Berhasil: ${results.length}`);
   console.log(`PFS >= ${CFG.MIN_SCORE}: ${qualified.length}`);
   console.log(`Error: ${errors.length}`);
-  console.table(errors.slice(0, 20));
-
-console.table(
-  qualified.slice(0, 20).map((r) => ({
-    RANK: r.rank,
-    SAHAM: r.ticker,
-    PFS: r.score,
-    SIGNAL: r.signal,
-    VOL: r.volatility,
-    AKUM: r.accumulation,
-    RSR20: r.rsr20,
-    "VOL/AVG20": Number(r.volRatio).toFixed(2),
-  }))
-);
+  console.table(
+    qualified.slice(0, 20).map((r) => ({
+      RANK: r.rank,
+      SAHAM: r.ticker,
+      PFS: r.score,
+      SIGNAL: r.signal,
+      VOL: r.volatility,
+      AKUM: r.accumulation,
+      RSR20: r.rsr20,
+      "VOL/AVG20": Number(r.volRatio).toFixed(2),
+    }))
+  );
 }
 
 main().catch((error) => {

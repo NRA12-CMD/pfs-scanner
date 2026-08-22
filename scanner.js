@@ -1186,6 +1186,36 @@ async function runBacktest(fetched, ihsg) {
   }
   await fs.writeFile('output/backtest_manual_verifikasi.txt', manual.join('\n') + '\n', 'utf8');
 
+  // DETAIL PER SAHAM: ringkasan + seluruh trade saham agar mudah dicek manual.
+  const detailPerSaham = [];
+  detailPerSaham.push('PFS BACKTEST V65.6 ADAPTIVE RECOVERY - DETAIL PER SAHAM');
+  detailPerSaham.push('==============================================================');
+  detailPerSaham.push(`Generated : ${new Date().toISOString()}`);
+  detailPerSaham.push(`Signal lookback : ${CFG.BACKTEST_DAYS} hari | Horizon : ${CFG.BACKTEST_HORIZON_DAYS} hari`);
+  detailPerSaham.push(`TP1 +${CFG.RECOVERY_TP1_PCT}% | TP2 +${CFG.RECOVERY_TP2_PCT}% | AD1 -${CFG.RECOVERY_AD1_DD_PCT}% | AD2 -${CFG.RECOVERY_AD2_DD_PCT}% | MAX DD -${CFG.RECOVERY_MAX_DD_PCT}%`);
+  detailPerSaham.push('Kriteria merah : Close < -1% | Kriteria hijau : Close > -1%');
+  detailPerSaham.push('');
+  for (const s of stockSummary) {
+    detailPerSaham.push(`### ${s.ticker}`);
+    detailPerSaham.push(`Trades=${s.trades} | TP1=${s.tp1Hit} | TP1_WR=${s.winRateTP1.toFixed(2)}% | Recovery=${s.recoveryTrades} | AD=${s.averageDownTrades} | AD_Recovery=${s.recoveryRate.toFixed(2)}%`);
+    detailPerSaham.push(`AvgReturn=${pct(s.avgReturnPct)} | AvgMaxDD=${pct(s.avgMaxDrawdownPct)} | AvgRecoveryDay=${s.avgDaysToRecovery == null ? '-' : s.avgDaysToRecovery.toFixed(2)} | AvgTP1Day=${s.avgDaysToTP1 == null ? '-' : s.avgDaysToTP1.toFixed(2)} | AvgTP2Day=${s.avgDaysToTP2 == null ? '-' : s.avgDaysToTP2.toFixed(2)}`);
+    const stockTrades = grouped[s.ticker] || [];
+    for (const t of stockTrades) {
+      detailPerSaham.push(
+        `  ${t.signalDate} | ${t.criterion} | Entry=${formatPrice(t.entry)} | Change=${pct(t.changePct)} | PFS/EAS=${t.pfs}/${t.eas} | Grade=${t.entryGrade} | AD=${t.adCount} | FinalAvg=${formatPrice(t.finalAveragePrice)} | TP1=${t.tp1Hit ? 'D+' + t.tp1HitDay : '-'} | TP2=${t.tp2Hit ? 'D+' + t.tp2HitDay : '-'} | REC=${t.daysToRecovery == null ? '-' : 'D+' + t.daysToRecovery} | BEP=${t.daysToBEP == null ? '-' : 'D+' + t.daysToBEP} | Exit=D+${t.exitDay} ${t.exitDate} | Reason=${t.exitReason} | Return=${pct(t.finalReturnPct)}`
+      );
+      if (t.adEvents?.length) {
+        for (const a of t.adEvents) {
+          detailPerSaham.push(
+            `    AD${a.number}: D+${a.day} ${a.date} @ ${formatPrice(a.price)} | DD=${pct(a.drawdownPct)} | AvgAfter=${formatPrice(a.averagePriceAfter)} | RecoveryScore=${a.recoveryScore} | PFS/EAS=${a.pfs}/${a.eas}`
+          );
+        }
+      }
+    }
+    detailPerSaham.push('');
+  }
+  await fs.writeFile('output/backtest_detail_per_saham.txt', detailPerSaham.join('\n') + '\n', 'utf8');
+
   return {criteria,byGrade,stockSummary,trades};
 }
 
@@ -1317,12 +1347,27 @@ async function runTelegramBacktestCommand(chatId, mode) {
           ? `🏆 TP1 WIN RATE TERBAIK: 🔴 MERAH (${red.tp1WinRate.toFixed(1)}%)`
           : `🏆 TP1 WIN RATE TERBAIK: 🟢 HIJAU (${green.tp1WinRate.toFixed(1)}%)`);
     }
-    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 JSON: output/backtest.json\n📄 CSV: output/backtest.csv\n📊 Per saham: output/backtest_per_saham.csv\n📝 TXT manual: backtest_manual_verifikasi.txt";
+    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 JSON: output/backtest.json\n📄 CSV detail: output/backtest.csv\n📊 CSV per saham: output/backtest_per_saham.csv\n📝 TXT manual: output/backtest_manual_verifikasi.txt\n📋 TXT detail per saham: output/backtest_detail_per_saham.txt";
     await sendTelegramTo(chatId, message);
     await sendTelegramDocument(
       chatId,
       "output/backtest_manual_verifikasi.txt",
-      "📝 BACKTEST MANUAL VERIFICATION — cek setiap trade, AD, TP1, TP2, Recovery, Exit, dan Return."
+      "📝 TXT MANUAL — cek setiap trade, AD, TP1, TP2, Recovery, Exit, dan Return."
+    );
+    await sendTelegramDocument(
+      chatId,
+      "output/backtest.csv",
+      "📄 CSV DETAIL — seluruh trade backtest, cocok untuk Excel/Google Sheets."
+    );
+    await sendTelegramDocument(
+      chatId,
+      "output/backtest_per_saham.csv",
+      "📊 CSV PER SAHAM — win rate TP1, recovery, AD, return, dan hari recovery."
+    );
+    await sendTelegramDocument(
+      chatId,
+      "output/backtest_detail_per_saham.txt",
+      "📋 TXT PER SAHAM — detail lengkap setiap saham dan setiap trade."
     );
   } catch (error) {
     await sendTelegramTo(chatId, `❌ BACKTEST GAGAL\n\n${error.message}`);

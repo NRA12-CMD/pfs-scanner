@@ -924,38 +924,146 @@ async function main() {
   await fs.writeFile("output/screening.csv", toCSV(qualified));
   await fs.writeFile("output/errors.json", JSON.stringify(errors, null, 2));
   
-// ================= TELEGRAM FULL SCREENING =================
+// ============ TELEGRAM FULL SCREENING ============
+
+// Format angka agar rapi
+function fmtNum(value, decimals = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+
+  return n.toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+}
+
+// Format angka tanpa desimal
+function fmtInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+
+  return n.toLocaleString("en-US", {
+    maximumFractionDigits: 0
+  });
+}
+
+// Format persen
+function fmtPct(value, decimals = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+
+  return `${n >= 0 ? "+" : ""}${n.toFixed(decimals)}%`;
+}
+
+// Format nilai yang bisa berupa angka / teks
+function fmtValue(value, decimals = 2) {
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+
+  const n = Number(value);
+
+  if (Number.isFinite(n)) {
+    return fmtNum(n, decimals);
+  }
+
+  return String(value);
+}
+
 const telegramHeader =
   "📊 PFS SCREENING IDX\n" +
-  `Total saham: ${qualified.length}\n` +
-  `Minimum PFS: ${CFG.MIN_SCORE}\n` +
+  `Total saham : ${qualified.length}\n` +
+  `Minimum PFS : ${CFG.MIN_SCORE}\n` +
   "━━━━━━━━━━━━━━━━━━━━\n\n";
 
 let telegramText = telegramHeader;
 
 qualified.forEach((r, i) => {
+
+  const signal = r.signal || "-";
+  const volatility = r.volatility || "-";
+
+  const cleanText = (value) => {
+  if (
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    String(value).toLowerCase() === "undefined" ||
+    String(value).toLowerCase() === "null"
+  ) {
+    return "-";
+  }
+
+  return String(value);
+};
+
+const accumulation1d = cleanText(
+  r.accumulation1d ?? r.accumulation
+);
+
+const accumulation5d = cleanText(
+  r.accumulation5d
+);
+
+const accumulation10d = cleanText(
+  r.accumulation10d
+);
+
+  const avg1d =
+    r.accumulationAvg1d ??
+    r.accumulationAvg1d ??
+    null;
+
+  const avg5d =
+    r.accumulationAvg5d ??
+    null;
+
+  const avg10d =
+    r.accumulationAvg10d ??
+    null;
+
+  const changePct = r.changePct;
+
   telegramText +=
-    `${i + 1}. ${r.ticker} | PFS ${r.score} | ${r.signal}\n` +
-    `Vol: ${r.volatility} | Akum: ${r.accumulation}\n` +
-    `Akum 1D: ${r.accumulation1d} | Avg: ${r.accumulationAvg1d}\n` +
-    `Akum 5D: ${r.accumulation5d} | Avg: ${r.accumulationAvg5d}\n` +
-    `Akum 10D: ${r.accumulation10d} | Avg: ${r.accumulationAvg10d}\n` +
-    `Close: ${r.close} | Chg: ${r.changePct}%\n` +
-    `RSI14: ${r.rsi14} | EMA20: ${r.ema20} | EMA50: ${r.ema50}\n` +
-    `MACD: ${r.macdHist} | VOL/AVG20: ${r.volVs20}\n` +
-    `ATR14: ${r.atrPct}% | HIGH20: ${r.high20}\n` +
-    `RSR20: ${r.rsr20} | RSR60: ${r.rsr60}\n` +
-    `CANDLE: ${r.candle} | TREND: ${r.trend}\n` +
-    "────────────────────\n";
+    `${i + 1}. ${r.ticker} | PFS ${fmtInt(r.score)} | ${signal}\n` +
+
+    `Vol       : ${volatility}\n` +
+
+    `Akum 1D   : ${accumulation1d} | Avg 1D  : ${fmtNum(avg1d)}\n` +
+    `Akum 5D   : ${accumulation5d} | Avg 5D  : ${fmtNum(avg5d)}\n` +
+    `Akum 10D  : ${accumulation10d} | Avg 10D: ${fmtNum(avg10d)}\n` +
+
+    `Close     : ${fmtNum(r.close, 0)} | Chg : ${fmtPct(changePct)}\n` +
+
+    `RSI14     : ${fmtNum(r.rsi14)}\n` +
+    `EMA20     : ${fmtNum(r.ema20)}\n` +
+    `EMA50     : ${fmtNum(r.ema50)}\n` +
+
+    `MACD      : ${fmtNum(r.macdHist)}\n` +
+    `VOL/AVG20 : ${fmtNum(r.volRatio)}\n` +
+    `ATR14     : ${fmtPct(r.atrPct)}\n` +
+
+    `HIGH20    : ${fmtNum(r.high20, 0)}\n` +
+    `RSR20/60  : ${fmtInt(r.rsr20)} / ${fmtInt(r.rsr60)}\n` +
+
+    `CANDLE    : ${r.candle || "-"}\n` +
+    `TREND     : ${r.trend || "-"}\n` +
+
+    "━━━━━━━━━━━━━━━━━━━━\n\n";
 });
 
-// Telegram maksimal sekitar 4096 karakter per pesan.
-// Jadi otomatis dipecah menjadi beberapa pesan.
+// Telegram maksimal sekitar 4096 karakter.
+// Kita gunakan 3800 agar aman.
 const TELEGRAM_LIMIT = 3800;
 
 for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
-  await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
+  await sendTelegram(
+    telegramText.substring(i, i + TELEGRAM_LIMIT)
+  );
 }
+
+console.log("");
+console.log("Telegram full screening berhasil dikirim.");
   
   console.log("");
   console.log(`Selesai. Dicek: ${symbols.length}`);

@@ -452,6 +452,84 @@ function nearestPriorIHSG(ihsg, date) {
   return best;
 }
 
+
+function calculateEarlyAccumulationScore(stock, calc) {
+  const last = stock?.at(-1);
+  const prev = stock?.at(-2);
+  if (!last || !prev || !calc?.latest) {
+    return { score: 0, label: "LEMAH", reasons: [] };
+  }
+
+  const close = Number(last.close);
+  const prevClose = Number(prev.close);
+  const volRatio = Number(calc.latest.volRatio ?? 0);
+  const rsi = Number(calc.latest.rsi ?? 0);
+  const macdHist = Number(calc.latest.macdHist ?? 0);
+  const ema20 = Number(calc.latest.ema20 ?? 0);
+  const ema50 = Number(calc.latest.ema50 ?? 0);
+
+  const lookback = stock.slice(Math.max(0, stock.length - 20));
+  const high20 = Math.max(...lookback.map(x => Number(x.close) || 0));
+  const nearHigh = high20 > 0 ? close / high20 : 0;
+
+  let score = 0;
+  const reasons = [];
+
+  if (volRatio >= 1.5) { score += 20; reasons.push("Volume kuat"); }
+  else if (volRatio >= 1.2) { score += 15; reasons.push("Volume naik"); }
+  else if (volRatio >= 1.0) { score += 10; }
+
+  const five = stock.slice(Math.max(0, stock.length - 5));
+  const ten = stock.slice(Math.max(0, stock.length - 10));
+
+  const avgMove = arr => {
+    if (arr.length < 2) return 0;
+    const first = Number(arr[0].close);
+    const lastC = Number(arr.at(-1).close);
+    return first > 0 ? ((lastC / first) - 1) * 100 : 0;
+  };
+
+  const acc5 = avgMove(five);
+  const acc10 = avgMove(ten);
+
+  if (acc5 > 0) { score += 20; reasons.push("Akumulasi 5D"); }
+  else if (acc5 >= -1) score += 10;
+
+  if (acc10 > 0) { score += 15; reasons.push("Akumulasi 10D"); }
+  else if (acc10 >= -2) score += 8;
+
+  if (nearHigh >= 0.98) { score += 15; reasons.push("Dekat High 20D"); }
+  else if (nearHigh >= 0.95) score += 10;
+
+  if (rsi >= 50 && rsi <= 70) { score += 10; reasons.push("RSI sehat"); }
+  else if (rsi >= 45 && rsi < 50) score += 5;
+
+  if (macdHist > 0) { score += 10; reasons.push("MACD positif"); }
+  else if (macdHist >= -0.01) score += 5;
+
+  if (close > ema20 && ema20 >= ema50) {
+    score += 10;
+    reasons.push("Trend mendukung");
+  }
+
+  score = Math.round(Math.min(100, score));
+
+  const label =
+    score >= 80 ? "EARLY ACCUMULATION" :
+    score >= 65 ? "AKUMULASI AWAL" :
+    score >= 50 ? "MULAI TERBENTUK" :
+    "LEMAH";
+
+  return {
+    score,
+    label,
+    reasons,
+    acc5,
+    acc10,
+    nearHigh
+  };
+}
+
 function screenScore(stock, calc) {
   const x = calc.latest;
   const n = stock.length;
@@ -747,7 +825,7 @@ function toCSV(rows) {
   const lines = [headers.join(",")];
   for (const r of rows) {
     lines.push([
-      r.rank, r.ticker, r.score, r.signal, r.volatility,
+      r.rank, r.ticker, r.score, r.signal, r.volatility, r.earlyAccumulationScore, r.earlyAccumulationLabel,
       r.accumulation, r.accumulationAvg1d, r.accumulation5d,
       r.accumulationAvg5d, r.accumulation10d, r.accumulationAvg10d,
       r.close, r.changePct, r.rsi, r.ema20, r.ema50, r.macdHist,
@@ -810,6 +888,7 @@ async function main() {
     try {
       const calc = calculateIndicators(stock, ihsg);
       const s = screenScore(stock, calc);
+      const eas = calculateEarlyAccumulationScore(stock, calc);
       const last = stock.at(-1);
       const prev = stock.at(-2);
 
@@ -818,6 +897,9 @@ async function main() {
         dataDate: dateKey(last.date),
         score: s.score,
         signal: s.signal,
+        earlyAccumulationScore: eas.score,
+        earlyAccumulationLabel: eas.label,
+        earlyAccumulationReason: eas.reasons.join(" | "),
         volatility: getVolatilityCategory(s.atrPct),
         close: last.close,
         volume: last.volume,

@@ -1,4 +1,4 @@
-// PFS Scanner - Node.js / GitHub Actions
+// PFS Scanner V61.2 - PFS + EAS + Timing + Trend + Entry Decision
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
 //
@@ -536,6 +536,116 @@ function calculateEarlyAccumulationScore(stock, calc) {
   };
 }
 
+
+function calculateTrendScore(stock, calc, s) {
+  const x = calc.latest;
+  let score = 0;
+
+  // Struktur EMA = komponen terbesar karena trend harus konsisten.
+  if (x.close > x.ema8 && x.ema8 > x.ema14 && x.ema14 > x.ema20) score += 30;
+  else if (x.close > x.ema20 && x.ema8 > x.ema14) score += 22;
+  else if (x.close > x.ema20) score += 12;
+
+  if (x.rsr20 >= 70) score += 20;
+  else if (x.rsr20 >= 60) score += 15;
+  else if (x.rsr20 >= 50) score += 8;
+
+  if (x.rsr60 >= 70) score += 10;
+  else if (x.rsr60 >= 60) score += 7;
+  else if (x.rsr60 >= 50) score += 4;
+
+  if (x.momentum >= 80) score += 15;
+  else if (x.momentum >= 70) score += 12;
+  else if (x.momentum >= 60) score += 8;
+  else if (x.momentum >= 50) score += 4;
+
+  if (x.macdHist > 0) score += 10;
+  else if (x.macdHist >= -0.01) score += 5;
+
+  if (x.obvTrend) score += 10;
+  else score += 3;
+
+  const ema50 = Number(s.ema50 || 0);
+  if (ema50 > 0 && x.close > ema50) score += 5;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function calculateTimingScore(stock, calc, s) {
+  const x = calc.latest;
+  const last = stock.at(-1);
+  const prev = stock.at(-2);
+  if (!last || !prev) return 0;
+
+  let score = 0;
+
+  // Williams %R: mencari timing yang belum terlalu overbought.
+  if (x.willr > -80 && x.willr <= -50) score += 30;
+  else if (x.willr > -90 && x.willr <= -40) score += 22;
+  else if (x.willr > -100) score += 12;
+
+  const high20 = Math.max(...stock.slice(-CFG.DISPLAY_DAYS).map((z) => Number(z.high) || 0));
+  const distHigh = high20 > 0 ? ((high20 - last.close) / high20) * 100 : 100;
+  if (distHigh >= 0 && distHigh <= 2) score += 20;
+  else if (distHigh <= 5) score += 15;
+  else if (distHigh <= 8) score += 8;
+
+  const volRatio = Number(s.volRatio || 0);
+  if (volRatio >= 1.5) score += 20;
+  else if (volRatio >= 1.2) score += 15;
+  else if (volRatio >= 1.0) score += 8;
+
+  const range = Number(last.high) - Number(last.low);
+  const closeLocation = range > 0 ? (Number(last.close) - Number(last.low)) / range : 0.5;
+  const bullishCandle = last.close > last.open && last.close > prev.close;
+  if (bullishCandle) score += 15;
+  else if (last.close > last.open) score += 8;
+
+  if (closeLocation >= 0.70) score += 15;
+  else if (closeLocation >= 0.55) score += 10;
+  else if (closeLocation >= 0.45) score += 5;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function calculateEntryDecision(pfs, eas, trendScore, timingScore) {
+  // Final Entry Score: PFS 40% + EAS 25% + Trend 20% + Timing 15%.
+  const entryScore = Math.round(
+    Number(pfs || 0) * 0.40 +
+    Number(eas || 0) * 0.25 +
+    Number(trendScore || 0) * 0.20 +
+    Number(timingScore || 0) * 0.15
+  );
+
+  let entryDecision = "TUNGGU";
+  let entryGrade = "D";
+
+  if (
+    entryScore >= 85 &&
+    pfs >= 85 && eas >= 75 && trendScore >= 80 && timingScore >= 75
+  ) {
+    entryDecision = "ENTRY A+";
+    entryGrade = "A+";
+  } else if (
+    entryScore >= 78 &&
+    pfs >= 80 && eas >= 65 && trendScore >= 70 && timingScore >= 65
+  ) {
+    entryDecision = "ENTRY A";
+    entryGrade = "A";
+  } else if (
+    entryScore >= 70 &&
+    pfs >= 75 && eas >= 55 && trendScore >= 60 && timingScore >= 55
+  ) {
+    entryDecision = "CICIL ENTRY";
+    entryGrade = "B";
+  } else if (entryScore >= 60 && pfs >= 70) {
+    entryDecision = "WATCHLIST";
+    entryGrade = "C";
+  }
+
+  return { entryScore, entryDecision, entryGrade };
+}
+
 function screenScore(stock, calc) {
   const x = calc.latest;
   const n = stock.length;
@@ -816,7 +926,7 @@ async function loadSymbols() {
 
 function toCSV(rows) {
   const headers = [
-    "RANK","SAHAM","PFS","SIGNAL","VOLATILITAS","EAS","EARLY_ACCUMULATION",
+    "RANK","SAHAM","PFS","TIMING_SCORE","TREND_SCORE","ENTRY_SCORE","ENTRY_DECISION","ENTRY_GRADE","SIGNAL","VOLATILITAS","EAS","EARLY_ACCUMULATION",
     "AKUMULASI_1D","RATA_AKUMULASI_1D","AKUMULASI_5D","RATA_AKUMULASI_5D",
     "AKUMULASI_10D","RATA_AKUMULASI_10D","CLOSE","PERUBAHAN_PCT",
     "RSI14","EMA20","EMA50","MACD_HIST","VOL_VS_AVG20","ATR14_PCT",
@@ -831,7 +941,7 @@ function toCSV(rows) {
   const lines = [headers.join(",")];
   for (const r of rows) {
     lines.push([
-      r.rank, r.ticker, r.score, r.signal, r.volatility, r.earlyAccumulationScore, r.earlyAccumulationLabel,
+      r.rank, r.ticker, r.score, r.timingScore, r.trendScore, r.entryScore, r.entryDecision, r.entryGrade, r.signal, r.volatility, r.earlyAccumulationScore, r.earlyAccumulationLabel,
       r.accumulation, r.accumulationAvg1d, r.accumulation5d,
       r.accumulationAvg5d, r.accumulation10d, r.accumulationAvg10d,
       r.close, r.changePct, r.rsi, r.ema20, r.ema50, r.macdHist,
@@ -846,7 +956,7 @@ async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V61.1 EARLY ACCUMULATION RADAR Node.js`);
+  console.log(`PFS Scanner V61.2 PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`Universe    : ${symbols.length} saham`);
   console.log(`Max output  : ${CFG.MAX_RESULTS}`);
@@ -895,6 +1005,9 @@ async function main() {
       const calc = calculateIndicators(stock, ihsg);
       const s = screenScore(stock, calc);
       const eas = calculateEarlyAccumulationScore(stock, calc);
+      const trendScore = calculateTrendScore(stock, calc, s);
+      const timingScore = calculateTimingScore(stock, calc, s);
+      const entry = calculateEntryDecision(s.score, eas.score, trendScore, timingScore);
       const last = stock.at(-1);
       const prev = stock.at(-2);
 
@@ -902,7 +1015,13 @@ async function main() {
         ticker,
         dataDate: dateKey(last.date),
         score: s.score,
-        signal: s.signal,
+        pfsSignal: s.signal,
+        signal: entry.entryDecision,
+        timingScore,
+        trendScore,
+        entryScore: entry.entryScore,
+        entryDecision: entry.entryDecision,
+        entryGrade: entry.entryGrade,
         earlyAccumulationScore: eas.score,
         earlyAccumulationLabel: eas.label,
         earlyAccumulationReason: eas.reasons.join(" | "),
@@ -944,19 +1063,22 @@ async function main() {
     }
   }
 
-  // PFS tetap menjadi ranking utama; EAS menjadi tie-breaker.
+  // PFS tetap menjadi fondasi; Entry Score menjadi tie-breaker utama berikutnya,
+  // lalu EAS. Dengan demikian ranking tetap stabil tetapi kandidat entry lebih terlihat.
   results.sort(
     (a, b) =>
       b.score - a.score ||
+      b.entryScore - a.entryScore ||
       b.earlyAccumulationScore - a.earlyAccumulationScore
   );
 
-  // V61.1: minimum PFS 62 + ranking PFS + EAS sebagai tie-breaker + cap 50.
+  // V61.2: minimum PFS 62 + ranking PFS + Entry Score + EAS + cap 50.
   const qualified = results
     .filter((r) => r.score >= CFG.MIN_SCORE)
     .sort(
       (a, b) =>
         b.score - a.score ||
+        b.entryScore - a.entryScore ||
         b.earlyAccumulationScore - a.earlyAccumulationScore
     )
     .slice(0, CFG.MAX_RESULTS);
@@ -1032,6 +1154,9 @@ async function main() {
     qualified.forEach((r, i) => {
       telegramText +=
         `${i + 1}. ${r.ticker} | PFS ${fmtInt(r.score)} | ${r.signal || "-"}\n` +
+        `🎯 ENTRY    : ${fmtInt(r.entryScore)}/100 | ${cleanText(r.entryDecision)} | Grade ${cleanText(r.entryGrade)}\n` +
+        `⏱ TIMING   : ${fmtInt(r.timingScore)}/100\n` +
+        `📈 TREND    : ${fmtInt(r.trendScore)}/100 | ${cleanText(r.trendQuality)}\n` +
         `🟢 EAS      : ${fmtInt(r.earlyAccumulationScore)}/100 | ${cleanText(r.earlyAccumulationLabel)}\n` +
         `Vol        : ${cleanText(r.volatility)}\n` +
         `Akum 1D    : ${cleanText(r.accumulation)} | Avg 1D  : ${fmtNum(r.accumulationAvg1d)}\n` +
@@ -1068,7 +1193,10 @@ async function main() {
       RANK: r.rank,
       SAHAM: r.ticker,
       PFS: r.score,
-      SIGNAL: r.signal,
+      TIMING: r.timingScore,
+      TREND: r.trendScore,
+      ENTRY: r.entryScore,
+      DECISION: r.entryDecision,
       VOL: r.volatility,
       AKUM: r.accumulation,
       RSR20: r.rsr20,

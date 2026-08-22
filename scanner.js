@@ -923,7 +923,40 @@ async function main() {
 
   await fs.writeFile("output/screening.csv", toCSV(qualified));
   await fs.writeFile("output/errors.json", JSON.stringify(errors, null, 2));
+  
+// ================= TELEGRAM FULL SCREENING =================
+const telegramHeader =
+  "📊 PFS SCREENING IDX\n" +
+  `Total saham: ${qualified.length}\n` +
+  `Minimum PFS: ${CFG.MIN_SCORE}\n` +
+  "━━━━━━━━━━━━━━━━━━━━\n\n";
 
+let telegramText = telegramHeader;
+
+qualified.forEach((r, i) => {
+  telegramText +=
+    `${i + 1}. ${r.ticker} | PFS ${r.score} | ${r.signal}\n` +
+    `Vol: ${r.volatility} | Akum: ${r.accumulation}\n` +
+    `Akum 1D: ${r.accumulation1d} | Avg: ${r.accumulationAvg1d}\n` +
+    `Akum 5D: ${r.accumulation5d} | Avg: ${r.accumulationAvg5d}\n` +
+    `Akum 10D: ${r.accumulation10d} | Avg: ${r.accumulationAvg10d}\n` +
+    `Close: ${r.close} | Chg: ${r.changePct}%\n` +
+    `RSI14: ${r.rsi14} | EMA20: ${r.ema20} | EMA50: ${r.ema50}\n` +
+    `MACD: ${r.macdHist} | VOL/AVG20: ${r.volVs20}\n` +
+    `ATR14: ${r.atrPct}% | HIGH20: ${r.high20}\n` +
+    `RSR20: ${r.rsr20} | RSR60: ${r.rsr60}\n` +
+    `CANDLE: ${r.candle} | TREND: ${r.trend}\n` +
+    "────────────────────\n";
+});
+
+// Telegram maksimal sekitar 4096 karakter per pesan.
+// Jadi otomatis dipecah menjadi beberapa pesan.
+const TELEGRAM_LIMIT = 3800;
+
+for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
+  await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
+}
+  
   console.log("");
   console.log(`Selesai. Dicek: ${symbols.length}`);
   console.log(`Berhasil: ${results.length}`);

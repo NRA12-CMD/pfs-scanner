@@ -75,6 +75,15 @@ const CFG = {
   HIGH_WINRATE_MIN_RSR20: 70,
   HIGH_WINRATE_MIN_VOL_RATIO: 1.20,
   HIGH_WINRATE_MIN_ACCUMULATION: 50,
+  // V67 OHLC HIGH WINRATE
+  OHLC_MIN_SCORE: 80,
+  OHLC_STRONG_SCORE: 90,
+  OHLC_MIN_BODY_RATIO: 0.45,
+  OHLC_MIN_CLOSE_LOCATION: 0.70,
+  OHLC_MAX_UPPER_WICK_RATIO: 0.25,
+  OHLC_MAX_DISTANCE_EMA20_PCT: 8.0,
+  OHLC_REQUIRE_CLOSE_ABOVE_PREV_HIGH: false,
+  OHLC_REQUIRE_2DAY_CONFIRMATION: true,
   HIGH_WINRATE_MIN_VOLATILITY_LABEL: "SEDANG",
   HIGH_WINRATE_REQUIRE_MACD_POSITIVE: true,
   HIGH_WINRATE_REQUIRE_BULLISH_CANDLE: true,
@@ -1021,13 +1030,70 @@ function strictPassForBacktest(pfs, eas, trendScore, timingScore, entryScore, tr
   );
 }
 
+function calculateOHLCScore(stock) {
+  const last = stock.at(-1);
+  const prev = stock.at(-2);
+  if (!last || !prev) return { score: 0, label: "DATA_TIDAK_LENGKAP", reasons: ["DATA_TIDAK_LENGKAP"] };
+
+  const open = Number(last.open), high = Number(last.high), low = Number(last.low), close = Number(last.close);
+  const pClose = Number(prev.close), pHigh = Number(prev.high);
+  const range = high - low;
+  const body = Math.abs(close - open);
+  if (![open, high, low, close, pClose, pHigh].every(Number.isFinite) || range <= 0) {
+    return { score: 0, label: "DATA_TIDAK_LENGKAP", reasons: ["OHLC_INVALID"] };
+  }
+
+  const bodyRatio = body / range;
+  const closeLocation = (close - low) / range;
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+  const upperWickRatio = Math.max(0, upperWick / range);
+  const lowerWickRatio = Math.max(0, lowerWick / range);
+  const bullish = close > open;
+  const higherClose = close > pClose;
+  const higherHigh = high >= pHigh;
+  const strongClose = closeLocation >= CFG.OHLC_MIN_CLOSE_LOCATION;
+  const goodBody = bullish && bodyRatio >= CFG.OHLC_MIN_BODY_RATIO;
+  const upperWickOK = upperWickRatio <= CFG.OHLC_MAX_UPPER_WICK_RATIO;
+  const lowerWickHealthy = lowerWickRatio <= 0.35 || (lowerWickRatio > 0.15 && closeLocation >= 0.75);
+
+  let score = 0;
+  const reasons = [];
+  if (bullish) { score += 20; reasons.push("BULLISH"); }
+  if (goodBody) { score += 20; reasons.push("BODY_KUAT"); }
+  else if (bullish && bodyRatio >= 0.30) score += 10;
+  if (strongClose) { score += 20; reasons.push("CLOSE_DEKAT_HIGH"); }
+  else if (closeLocation >= 0.60) score += 10;
+  if (upperWickOK) { score += 15; reasons.push("UPPER_WICK_TERKONTROL"); }
+  if (higherClose) { score += 10; reasons.push("CLOSE_NAIK"); }
+  if (higherHigh) { score += 5; reasons.push("HIGH_NAIK"); }
+  if (lowerWickHealthy) { score += 5; reasons.push("LOWER_WICK_SEHAT"); }
+
+  const prevRange = Number(prev.high) - Number(prev.low);
+  const prevBodyRatio = prevRange > 0 ? Math.abs(Number(prev.close) - Number(prev.open)) / prevRange : 0;
+  const prevBullish = Number(prev.close) >= Number(prev.open);
+  const prevNotWeak = prevBullish || prevBodyRatio < 0.65;
+  if (CFG.OHLC_REQUIRE_2DAY_CONFIRMATION && prevNotWeak) {
+    score += 5;
+    reasons.push("KONFIRMASI_2HARI");
+  }
+
+  score = Math.min(100, Math.round(score));
+  const label = score >= CFG.OHLC_STRONG_SCORE ? "OHLC SANGAT KUAT" :
+    score >= CFG.OHLC_MIN_SCORE ? "OHLC KUAT" :
+    score >= 70 ? "OHLC SEDANG" : "OHLC LEMAH";
+
+  return { score, label, reasons, bodyRatio, closeLocation, upperWickRatio, lowerWickRatio, bullish, higherClose, higherHigh };
+}
+
 function highWinratePass(stock, calc, s, eas, trendScore, timingScore, entry) {
   const x = calc.latest;
   const last = stock.at(-1);
   const prev = stock.at(-2);
-  if (!x || !last || !prev) return { pass: false, reasons: ["DATA_TIDAK_LENGKAP"] };
+  if (!x || !last || !prev) return { pass: false, reasons: ["DATA_TIDAK_LENGKAP"], ohlc: null };
 
-  const bullishCandle = last.close > last.open && last.close > prev.close;
+  const ohlc = calculateOHLCScore(stock);
+  const closeVsEma20 = Number(x.ema20) > 0 ? ((Number(last.close) / Number(x.ema20)) - 1) * 100 : Infinity;
   const checks = [
     [s.score >= CFG.HIGH_WINRATE_MIN_PFS, `PFS>=${CFG.HIGH_WINRATE_MIN_PFS}`],
     [eas.score >= CFG.HIGH_WINRATE_MIN_EAS, `EAS>=${CFG.HIGH_WINRATE_MIN_EAS}`],
@@ -1038,16 +1104,21 @@ function highWinratePass(stock, calc, s, eas, trendScore, timingScore, entry) {
     [Number(x.rsr20) >= CFG.HIGH_WINRATE_MIN_RSR20, `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20}`],
     [Number(s.volRatio) >= CFG.HIGH_WINRATE_MIN_VOL_RATIO, `VOL/AVG20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO}`],
     [Number(s.accumulationScore) >= CFG.HIGH_WINRATE_MIN_ACCUMULATION, `ACCUM>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION}`],
-    [s.volatility10Label === "SEDANG" || s.volatility10Label === "KUAT", "VOLATILITAS>=SEDANG"],
-    [Number(s.rsi) >= 50 && Number(s.rsi) <= 70, "RSI 50-70"],
+    [s.volatility10Label === "SEDANG" || s.volatility10Label === "KUAT" || s.volatility10Label === "TOP VOLATILITAS", "VOLATILITAS>=SEDANG"],
+    [Number(s.rsi) >= 52 && Number(s.rsi) <= 68, "RSI 52-68"],
     [!CFG.HIGH_WINRATE_REQUIRE_MACD_POSITIVE || Number(x.macdHist) > 0, "MACD>0"],
-    [!CFG.HIGH_WINRATE_REQUIRE_BULLISH_CANDLE || bullishCandle, "CANDLE BULLISH"],
+    [ohlc.score >= CFG.OHLC_MIN_SCORE, `OHLC>=${CFG.OHLC_MIN_SCORE}`],
+    [ohlc.bullish, "OHLC_BULLISH"],
+    [ohlc.closeLocation >= CFG.OHLC_MIN_CLOSE_LOCATION, "CLOSE_LOCATION>=70%"],
+    [ohlc.upperWickRatio <= CFG.OHLC_MAX_UPPER_WICK_RATIO, "UPPER_WICK<=25%"],
+    [closeVsEma20 <= CFG.OHLC_MAX_DISTANCE_EMA20_PCT, `CLOSE<=EMA20+${CFG.OHLC_MAX_DISTANCE_EMA20_PCT}%`],
     [Number(last.close) > Number(x.ema20), "CLOSE>EMA20"],
-    [Number(x.ema20) > Number(s.ema50), "EMA20>EMA50"],
-    [Number(last.close) > Number(s.ema50), "CLOSE>EMA50"],
+    [Number(x.ema20) > Number(x.ema50), "EMA20>EMA50"],
+    [Number(last.close) > Number(x.ema50), "CLOSE>EMA50"],
   ];
+  if (CFG.OHLC_REQUIRE_CLOSE_ABOVE_PREV_HIGH) checks.push([ohlc.higherHigh && Number(last.close) > Number(prev.high), "BREAKOUT_PREV_HIGH"]);
   const failed = checks.filter(([ok]) => !ok).map(([, label]) => label);
-  return { pass: failed.length === 0, reasons: failed };
+  return { pass: failed.length === 0, reasons: failed, ohlc };
 }
 
 function classifyBacktestClose(changePct) {
@@ -1229,7 +1300,7 @@ async function runBacktest(fetched, ihsg, mode = "all") {
           if (!highWinrate.pass) continue;
         }
         const outcome=evaluateAdaptiveRecovery(stock,i,ihsg); if(!outcome) continue;
-        trades.push({tradeId:`${ticker}-${dateKey(signalBar.date)}`,ticker,signalDate:dateKey(signalBar.date),criterion,filterProfile:mode === "highwinrate" ? "HIGH_WINRATE" : "BASELINE",changePct,pfs:s.score,eas:eas.score,trendScore,timingScore,entryScore:entry.entryScore,entryDecision:entry.entryDecision,entryGrade:entry.entryGrade,trendQuality:s.trendQuality,highWinrateChecks:highWinrate?.reasons || [],...outcome});
+        trades.push({tradeId:`${ticker}-${dateKey(signalBar.date)}`,ticker,signalDate:dateKey(signalBar.date),criterion,filterProfile:mode === "highwinrate" ? "HIGH_WINRATE" : "BASELINE",changePct,pfs:s.score,eas:eas.score,trendScore,timingScore,entryScore:entry.entryScore,entryDecision:entry.entryDecision,entryGrade:entry.entryGrade,trendQuality:s.trendQuality,highWinrateChecks:highWinrate?.reasons || [],ohlcScore:highWinrate?.ohlc?.score ?? null,ohlcLabel:highWinrate?.ohlc?.label ?? null,ohlcReasons:highWinrate?.ohlc?.reasons ?? [],...outcome});
       }catch(_){ }
     }
   }
@@ -1240,9 +1311,14 @@ async function runBacktest(fetched, ihsg, mode = "all") {
     const fail = rows.filter(x => x.exitReason === 'FAILED_RECOVERY').length;
     const ad = rows.filter(x => x.adCount > 0);
     const adRec = ad.filter(x => x.recoveryStatus === 'RECOVERY_TP1' || x.recoveryStatus === 'RECOVERY');
+    const ohlcRows = rows.filter(x => Number.isFinite(Number(x.ohlcScore)));
+    const avgOHLC = ohlcRows.length ? average(ohlcRows.map(x => Number(x.ohlcScore))) : null;
+    const strongOHLC = ohlcRows.filter(x => Number(x.ohlcScore) >= CFG.OHLC_STRONG_SCORE).length;
     const avg = (a) => a.length ? average(a) : null;
     return {
       signals: n,
+      avgOHLCScore: avgOHLC,
+      strongOHLC,
       tp1Hit: tp1,
       tp1WinRate: n ? tp1 / n * 100 : 0,
       recovery: rec,
@@ -1469,6 +1545,7 @@ function formatBacktestCriterion(label, x) {
   return [
     label,
     `Sinyal       : ${x.signals}`,
+    `OHLC Score  : ${x.avgOHLCScore == null ? '-' : x.avgOHLCScore.toFixed(1)} | >=${CFG.OHLC_STRONG_SCORE}: ${x.strongOHLC}`,
     `TP Adaptive   : +${CFG.RECOVERY_TP1_PCT}% | Hit: ${x.tp1Hit} | WR: ${x.tp1WinRate.toFixed(1)}%`,
     `Recovery     : ${x.recovery} | Rate: ${x.recoveryRate.toFixed(1)}%`,
     `AD Trades    : ${x.averageDownTrades} | AD Success: ${x.averageDownSuccessRate.toFixed(1)}%`,
@@ -1484,7 +1561,7 @@ function formatTradeDetail(t) {
   return [
     `📌 ${t.ticker} | ${t.signalDate}`,
     `Entry       : ${formatPrice(t.entry)} | PFS ${t.pfs}`,
-    `Timing/Trend/Entry : ${t.timingScore}/${t.trendScore}/${t.entryScore}`,
+    `Timing/Trend/Entry : ${t.timingScore}/${t.trendScore}/${t.entryScore}`,\n    `OHLC Score  : ${t.ohlcScore ?? "-"} | ${t.ohlcLabel ?? "-"}`,
     `Grade       : ${t.entryGrade} | ${t.criterion}`,
     `AD          : ${t.adCount}x | Avg akhir ${formatPrice(t.finalAveragePrice)}`,
     ...(t.adEvents || []).map(a => `  AD${a.number} D+${a.day} ${a.date} @ ${formatPrice(a.price)} | Avg ${formatPrice(a.averagePriceAfter)} | RS ${a.recoveryScore}`),
@@ -1528,9 +1605,10 @@ async function runTelegramBacktestCommand(chatId, mode) {
   await sendTelegramTo(chatId,
     "⏳ BACKTEST DIMULAI\n\n" +
     (isHighWinrate
-      ? "🏆 MODE HIGH WINRATE\n🟢 Hanya Close > -1%\n" +
+      ? "🏆 MODE HIGH WINRATE V67\n🟢 Close > -1% + OHLC\n" +
         `PFS>=${CFG.HIGH_WINRATE_MIN_PFS} | EAS>=${CFG.HIGH_WINRATE_MIN_EAS} | Trend>=${CFG.HIGH_WINRATE_MIN_TREND} | Timing>=${CFG.HIGH_WINRATE_MIN_TIMING} | Entry>=${CFG.HIGH_WINRATE_MIN_ENTRY}\n` +
-        `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION} | RSI 50-70 | MACD>0\n\n`
+        `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION} | RSI 52-68 | MACD>0\n` +
+        `OHLC>=${CFG.OHLC_MIN_SCORE} | Body>=${CFG.OHLC_MIN_BODY_RATIO} | CloseLoc>=${CFG.OHLC_MIN_CLOSE_LOCATION} | UpperWick<=${CFG.OHLC_MAX_UPPER_WICK_RATIO}\n\n`
       : "🔴 Kriteria 1: Close < -1%\n🟢 Kriteria 2: Close > -1%\n\n") +
     `Adaptive TP +${CFG.BACKTEST_TP1_PCT}% | MAX DD -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
     `Horizon: ${CFG.BACKTEST_HORIZON_DAYS} hari\n\n` +
@@ -1543,7 +1621,7 @@ async function runTelegramBacktestCommand(chatId, mode) {
     const green = result.criteria["CLOSE_>-1%"] || red;
     const selected = mode === "red" ? red : mode === "green" || mode === "highwinrate" ? green : null;
 
-    let message = `🧪 BACKTEST SELESAI — V66 ${mode === "highwinrate" ? "HIGH WINRATE" : "ADAPTIVE RECOVERY"}\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🧪 BACKTEST SELESAI — V67 ${mode === "highwinrate" ? "OHLC HIGH WINRATE" : "ADAPTIVE RECOVERY"}\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (selected) {
       message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE < -1%" : mode === "highwinrate" ? "🏆 HIGH WINRATE: CLOSE > -1%" : "🟢 CLOSE > -1%", selected);
     } else {

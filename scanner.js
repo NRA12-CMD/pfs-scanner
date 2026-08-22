@@ -11,6 +11,7 @@
 // - Base Minimum PFS: 62
 // - STRICT qualification: PFS + EAS + Timing + Trend + Entry Score + UPTREND
 // - Maximum displayed results: 50
+// - V67.2: tidak ada filter perubahan harian Close +/- yang membatasi hasil scanner.
 // - Source: Yahoo Finance chart endpoint
 //
 // Input:
@@ -75,7 +76,7 @@ const CFG = {
   HIGH_WINRATE_MIN_RSR20: 70,
   HIGH_WINRATE_MIN_VOL_RATIO: 1.20,
   HIGH_WINRATE_MIN_ACCUMULATION: 50,
-  // V67 OHLC HIGH WINRATE
+  // V67.2 OHLC HIGH WINRATE - NO CLOSE CHANGE FILTER
   OHLC_MIN_SCORE: 80,
   OHLC_STRONG_SCORE: 90,
   OHLC_MIN_BODY_RATIO: 0.45,
@@ -1124,11 +1125,9 @@ function highWinratePass(stock, calc, s, eas, trendScore, timingScore, entry) {
 function classifyBacktestClose(changePct) {
   const c = Number(changePct);
   if (!Number.isFinite(c)) return null;
-  // Kriteria 1: candle merah lebih dari -1% (close di bawah -1%).
+  // Backtest legacy categories; filter ini tidak membatasi screening live.
   if (c < -1.0) return "MERAH: Close < -1%";
-  // Kriteria 2: close harian nol atau positif.
   if (c > -1.0) return "CLOSE_>-1%";
-  // Close antara -1% dan 0% tidak masuk kategori merah.
   return null;
 }
 
@@ -1295,7 +1294,7 @@ async function runBacktest(fetched, ihsg, mode = "all") {
         if(!strictPassForBacktest(s.score,eas.score,trendScore,timingScore,entry.entryScore,s.trendQuality)) continue;
         let highWinrate = null;
         if (mode === "highwinrate") {
-          if (criterion !== "CLOSE_>-1%") continue;
+          if (criterion !== "MERAH: Close < -1%") continue;
           highWinrate = highWinratePass(histStock, calc, s, eas, trendScore, timingScore, entry);
           if (!highWinrate.pass) continue;
         }
@@ -1561,7 +1560,8 @@ function formatTradeDetail(t) {
   return [
     `📌 ${t.ticker} | ${t.signalDate}`,
     `Entry       : ${formatPrice(t.entry)} | PFS ${t.pfs}`,
-    `Timing/Trend/Entry : ${t.timingScore}/${t.trendScore}/${t.entryScore}`,\n    `OHLC Score  : ${t.ohlcScore ?? "-"} | ${t.ohlcLabel ?? "-"}`,
+    `Timing/Trend/Entry : ${t.timingScore}/${t.trendScore}/${t.entryScore}`,
+    `OHLC Score  : ${t.ohlcScore ?? "-"} | ${t.ohlcLabel ?? "-"}`,
     `Grade       : ${t.entryGrade} | ${t.criterion}`,
     `AD          : ${t.adCount}x | Avg akhir ${formatPrice(t.finalAveragePrice)}`,
     ...(t.adEvents || []).map(a => `  AD${a.number} D+${a.day} ${a.date} @ ${formatPrice(a.price)} | Avg ${formatPrice(a.averagePriceAfter)} | RS ${a.recoveryScore}`),
@@ -1619,11 +1619,11 @@ async function runTelegramBacktestCommand(chatId, mode) {
     const result = await getBacktestDataAndRun(mode);
     const red = result.criteria["MERAH: Close < -1%"] || {signals:0,tp1Hit:0,tp1WinRate:0,recovery:0,recoveryRate:0,averageDownTrades:0,averageDownSuccessRate:0,failedRecovery:0,failedRate:0,avgFinalReturnPct:0,avgMaxDrawdownPct:0,avgDaysToRecovery:null,avgDaysToTP1:null,};
     const green = result.criteria["CLOSE_>-1%"] || red;
-    const selected = mode === "red" ? red : mode === "green" || mode === "highwinrate" ? green : null;
+    const selected = mode === "red" || mode === "highwinrate" ? red : mode === "green" ? green : null;
 
-    let message = `🧪 BACKTEST SELESAI — V67 ${mode === "highwinrate" ? "OHLC HIGH WINRATE" : "ADAPTIVE RECOVERY"}\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🧪 BACKTEST SELESAI — V67.1 ${mode === "highwinrate" ? "OHLC HIGH WINRATE - CLOSE <= -1%" : "ADAPTIVE RECOVERY"}\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (selected) {
-      message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE < -1%" : mode === "highwinrate" ? "🏆 HIGH WINRATE: CLOSE > -1%" : "🟢 CLOSE > -1%", selected);
+      message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE < -1%" : mode === "highwinrate" ? "🏆 HIGH WINRATE: CLOSE <= -1%" : "🟢 CLOSE > -1%", selected);
     } else {
       message += formatBacktestCriterion("🔴 CLOSE < -1%", red) + "\n\n" +
         formatBacktestCriterion("🟢 CLOSE > -1%", green) + "\n\n" +

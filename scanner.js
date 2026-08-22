@@ -1,4 +1,4 @@
-// PFS Scanner V64.4 GITHUB ACTIONS CONTROLLER - FAST 100D
+/ PFS Scanner V64.4 GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V64.2 FAST - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -70,8 +70,8 @@ const CFG = {
   BACKTEST_TP1_PCT: 3.0,
   BACKTEST_TP2_PCT: 6.0,
   // V65 Adaptive Recovery: no fixed SL -3% exit.
-  RECOVERY_AD1_DD_PCT: 2.0,
-  RECOVERY_AD2_DD_PCT: 4.0,
+  RECOVERY_AD1_DD_PCT: 4.0,
+  RECOVERY_AD2_DD_PCT: 6.0,
   RECOVERY_MAX_DD_PCT: 8.0,
   RECOVERY_MAX_AD: 2,
   RECOVERY_MIN_PFS: 70,
@@ -1129,6 +1129,63 @@ async function runBacktest(fetched, ihsg) {
   await fs.writeFile('output/backtest.csv',[headers.join(','),...trades.map(t=>headers.map(h=>esc(h==='adEvents'?JSON.stringify(t[h]||[]):t[h])).join(','))].join('\n')+'\n');
   const sh=['ticker','trades','tp1Hit','recoveryTrades','averageDownTrades','winRateTP1','recoveryRate','avgReturnPct','avgMaxDrawdownPct','avgDaysToRecovery','avgDaysToTP1','avgDaysToTP2'];
   await fs.writeFile('output/backtest_per_saham.csv',[sh.join(','),...stockSummary.map(t=>sh.map(h=>esc(t[h])).join(','))].join('\n')+'\n');
+
+  // TXT manual verification: satu baris per trade agar win rate bisa dicek manual.
+  const pct = (v) => Number.isFinite(Number(v)) ? Number(v).toFixed(2) + '%' : '-';
+  const yn = (v) => v ? 'YES' : 'NO';
+  const manual = [];
+  manual.push('PFS BACKTEST V65.5 ADAPTIVE RECOVERY - MANUAL VERIFICATION');
+  manual.push('==============================================================');
+  manual.push(`Generated : ${new Date().toISOString()}`);
+  manual.push(`Signal lookback : ${CFG.BACKTEST_DAYS} hari`);
+  manual.push(`Horizon : ${CFG.BACKTEST_HORIZON_DAYS} hari`);
+  manual.push(`TP1 : +${CFG.RECOVERY_TP1_PCT}% | TP2 : +${CFG.RECOVERY_TP2_PCT}%`);
+  manual.push(`AD1 : -${CFG.RECOVERY_AD1_DD_PCT}% | AD2 : -${CFG.RECOVERY_AD2_DD_PCT}% | MAX DD : -${CFG.RECOVERY_MAX_DD_PCT}%`);
+  manual.push('MERAH : Close < -1%');
+  manual.push('HIJAU : Close > -1%');
+  manual.push('');
+  manual.push('RINGKASAN PER KRITERIA');
+  manual.push('-----------------------');
+  for (const [label, x] of Object.entries(criteria)) {
+    manual.push(`${label}`);
+    manual.push(`Signals=${x.signals} | TP1=${x.tp1Hit} (${x.tp1WinRate.toFixed(2)}%) | TP2=${x.tp2Hit} (${x.tp2WinRate.toFixed(2)}%) | Recovery=${x.recovery} (${x.recoveryRate.toFixed(2)}%) | AD=${x.averageDownTrades} | AD Recovery=${x.averageDownSuccessRate.toFixed(2)}% | Failed=${x.failedRecovery} (${x.failedRate.toFixed(2)}%)`);
+    manual.push(`Avg Return=${pct(x.avgFinalReturnPct)} | Avg Max DD=${pct(x.avgMaxDrawdownPct)} | Avg Days Recovery=${x.avgDaysToRecovery == null ? '-' : x.avgDaysToRecovery.toFixed(2)} | Avg Days TP1=${x.avgDaysToTP1 == null ? '-' : x.avgDaysToTP1.toFixed(2)} | Avg Days TP2=${x.avgDaysToTP2 == null ? '-' : x.avgDaysToTP2.toFixed(2)}`);
+    manual.push('');
+  }
+  manual.push('DETAIL SETIAP TRADE');
+  manual.push('===================');
+  for (const t of trades) {
+    manual.push([
+      `${t.tradeId} | ${t.ticker} | ${t.signalDate}`,
+      `Criterion=${t.criterion}`,
+      `CloseChange=${pct(t.changePct)}`,
+      `PFS/EAS=${t.pfs}/${t.eas}`,
+      `Timing/Trend/Entry=${t.timingScore}/${t.trendScore}/${t.entryScore}`,
+      `Grade=${t.entryGrade}`,
+      `Entry=${formatPrice(t.entry)}`,
+      `AD_Count=${t.adCount}`,
+      `AD_Events=${(t.adEvents||[]).map(a => `AD${a.number}@D+${a.day}=${formatPrice(a.price)} Avg=${formatPrice(a.averagePriceAfter)}`).join(' ; ') || '-'}`,
+      `FinalAvg=${formatPrice(t.finalAveragePrice)}`,
+      `Lowest=${formatPrice(t.lowestPrice)}`,
+      `MaxDD=${pct(t.maxDrawdownPct)}`,
+      `TP1=${yn(t.tp1Hit)}@D+${t.tp1HitDay ?? '-'}`,
+      `TP2=${yn(t.tp2Hit)}@D+${t.tp2HitDay ?? '-'}`,
+      `Recovery=D+${t.daysToRecovery ?? '-'}`,
+      `BEP=D+${t.daysToBEP ?? '-'}`,
+      `Exit=D+${t.exitDay}@${formatPrice(t.exitPrice)}`,
+      `Reason=${t.exitReason}`,
+      `Status=${t.recoveryStatus}`,
+      `FinalReturn=${pct(t.finalReturnPct)}`
+    ].join(' | '));
+  }
+  manual.push('');
+  manual.push('REKAP PER SAHAM');
+  manual.push('================');
+  for (const s of stockSummary) {
+    manual.push(`${s.ticker} | Trades=${s.trades} | TP1=${s.tp1Hit} | TP1_WR=${s.winRateTP1.toFixed(2)}% | RecoveryTrades=${s.recoveryTrades} | ADTrades=${s.averageDownTrades} | RecoveryRate=${s.recoveryRate.toFixed(2)}% | AvgReturn=${pct(s.avgReturnPct)} | AvgMaxDD=${pct(s.avgMaxDrawdownPct)} | AvgRecoveryD=${s.avgDaysToRecovery == null ? '-' : s.avgDaysToRecovery.toFixed(2)} | AvgTP1D=${s.avgDaysToTP1 == null ? '-' : s.avgDaysToTP1.toFixed(2)} | AvgTP2D=${s.avgDaysToTP2 == null ? '-' : s.avgDaysToTP2.toFixed(2)}`);
+  }
+  await fs.writeFile('output/backtest_manual_verifikasi.txt', manual.join('\n') + '\n', 'utf8');
+
   return {criteria,byGrade,stockSummary,trades};
 }
 
@@ -1168,13 +1225,29 @@ async function sendTelegramTo(chatId, message) {
   }
 }
 
+async function sendTelegramDocument(chatId, filePath, caption = "") {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !chatId) return;
+  const fileBuffer = await fs.readFile(filePath);
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) form.append("caption", caption);
+  form.append("document", new Blob([fileBuffer], { type: "text/plain" }), path.basename(filePath));
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: "POST",
+    body: form
+  });
+  const result = await response.json();
+  if (!result.ok) throw new Error(result.description || "Telegram sendDocument gagal");
+}
+
 function commandHelp() {
   return [
     "🤖 PFS BACKTEST CONTROLLER V65",
     "━━━━━━━━━━━━━━━━━━━━",
     "/backtest — jalankan backtest lengkap",
-    "/backtest_MERAH: Close < -1%",
-    "/backtest_hijau — hanya close >=0%",
+    "/backtest_merah — hanya Close < -1%",
+    "/backtest_hijau — hanya Close > -1%",
     "/backtest_status — cek proses berjalan",
     "/backtest_hasil — ringkasan backtest terakhir",
     "/backtest_detail KODE — detail per saham",
@@ -1221,8 +1294,8 @@ async function runTelegramBacktestCommand(chatId, mode) {
   LAST_BACKTEST_AT = new Date();
   await sendTelegramTo(chatId,
     "⏳ BACKTEST DIMULAI\n\n" +
-    "🔴 Kriteria 1: Close -1% s/d <0%\n" +
-    "🟢 Kriteria 2: Close >=0%\n\n" +
+    "🔴 Kriteria 1: Close < -1%\n" +
+    "🟢 Kriteria 2: Close > -1%\n\n" +
     `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
     `Horizon: ${CFG.BACKTEST_HORIZON_DAYS} hari\n\n` +
     "Server sedang menghitung..."
@@ -1236,16 +1309,21 @@ async function runTelegramBacktestCommand(chatId, mode) {
 
     let message = "🧪 BACKTEST SELESAI — V65 ADAPTIVE RECOVERY\n━━━━━━━━━━━━━━━━━━━━\n";
     if (selected) {
-      message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE -1% s/d <0%" : "🟢 CLOSE >=0%", selected);
+      message += formatBacktestCriterion(mode === "red" ? "🔴 CLOSE < -1%" : "🟢 CLOSE > -1%", selected);
     } else {
-      message += formatBacktestCriterion("🔴 CLOSE -1% s/d <0%", red) + "\n\n" +
-        formatBacktestCriterion("🟢 CLOSE >=0%", green) + "\n\n" +
+      message += formatBacktestCriterion("🔴 CLOSE < -1%", red) + "\n\n" +
+        formatBacktestCriterion("🟢 CLOSE > -1%", green) + "\n\n" +
         (red.tp1WinRate >= green.tp1WinRate
           ? `🏆 TP1 WIN RATE TERBAIK: 🔴 MERAH (${red.tp1WinRate.toFixed(1)}%)`
           : `🏆 TP1 WIN RATE TERBAIK: 🟢 HIJAU (${green.tp1WinRate.toFixed(1)}%)`);
     }
-    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 JSON: output/backtest.json\n📄 CSV: output/backtest.csv\n📊 Per saham: output/backtest_per_saham.csv";
+    message += "\n━━━━━━━━━━━━━━━━━━━━\n📁 JSON: output/backtest.json\n📄 CSV: output/backtest.csv\n📊 Per saham: output/backtest_per_saham.csv\n📝 TXT manual: backtest_manual_verifikasi.txt";
     await sendTelegramTo(chatId, message);
+    await sendTelegramDocument(
+      chatId,
+      "output/backtest_manual_verifikasi.txt",
+      "📝 BACKTEST MANUAL VERIFICATION — cek setiap trade, AD, TP1, TP2, Recovery, Exit, dan Return."
+    );
   } catch (error) {
     await sendTelegramTo(chatId, `❌ BACKTEST GAGAL\n\n${error.message}`);
   } finally {
@@ -1378,7 +1456,7 @@ async function telegramBotOneShot() {
         await sendTelegramTo(cmd.chatId,
           "📊 HASIL BACKTEST TERAKHIR\n━━━━━━━━━━━━━━━━━━━━\n" +
           formatBacktestCriterion("🔴 MERAH: Close < -1%", red) + "\n\n" +
-          formatBacktestCriterion("🟢 CLOSE >=0%", green)
+          formatBacktestCriterion("🟢 CLOSE > -1%", green)
         );
       } catch (_) {
         await sendTelegramTo(cmd.chatId, "⚠️ Belum ada hasil backtest. Jalankan /backtest terlebih dahulu.");
@@ -1448,7 +1526,7 @@ async function telegramBotLoop() {
             await sendTelegramTo(chatId,
               "📊 HASIL BACKTEST TERAKHIR\n━━━━━━━━━━━━━━━━━━━━\n" +
               formatBacktestCriterion("🔴 MERAH: Close < -1%", red) + "\n\n" +
-              formatBacktestCriterion("🟢 CLOSE >=0%", green)
+              formatBacktestCriterion("🟢 CLOSE > -1%", green)
             );
           } catch (e) {
             await sendTelegramTo(chatId, "⚠️ Belum ada hasil backtest. Jalankan /backtest terlebih dahulu.");
@@ -1467,7 +1545,7 @@ async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V65.1 ADAPTIVE RECOVERY + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
+  console.log(`PFS Scanner V65.5 ADAPTIVE RECOVERY + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`History     : ${CFG.LOOKBACK_DAYS} trading candles (Yahoo window auto-expanded)`);
   console.log(`Universe    : ${symbols.length} saham`);
@@ -1726,7 +1804,7 @@ async function main() {
       `Target : TP1 +${CFG.RECOVERY_TP1_PCT}% | TP2 +${CFG.RECOVERY_TP2_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
        `AD : D1 -${CFG.RECOVERY_AD1_DD_PCT}% | D2 -${CFG.RECOVERY_AD2_DD_PCT}% | Max DD -${CFG.RECOVERY_MAX_DD_PCT}%\n` +
       `🔴 MERAH: Close < -1% : ${btRed.signals} | TP1 ${btRed.tp1WinRate.toFixed(1)}% | TP2 ${btRed.tp2WinRate.toFixed(1)}% | REC ${btRed.recoveryRate.toFixed(1)}% | AD ${btRed.averageDownSuccessRate.toFixed(1)}%\n` +
-      `🟢 CLOSE >=0%        : ${btGreen.signals} | TP1 ${btGreen.tp1WinRate.toFixed(1)}% | TP2 ${btGreen.tp2WinRate.toFixed(1)}% | REC ${btGreen.recoveryRate.toFixed(1)}% | AD ${btGreen.averageDownSuccessRate.toFixed(1)}%\n` +
+      `🟢 CLOSE > -1%      : ${btGreen.signals} | TP1 ${btGreen.tp1WinRate.toFixed(1)}% | TP2 ${btGreen.tp2WinRate.toFixed(1)}% | REC ${btGreen.recoveryRate.toFixed(1)}% | AD ${btGreen.averageDownSuccessRate.toFixed(1)}%\n` +
       "━━━━━━━━━━━━━━━━━━━━\n";
   }
 
@@ -1741,8 +1819,8 @@ async function main() {
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
   console.log(`Error: ${errors.length}`);
   if (shouldRunBacktest && backtest) {
-    console.log(`BACKTEST MERAH: Close < -1%"].tp1WinRate.toFixed(1)}%`);
-    console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>-1%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>-1%"].tp1WinRate.toFixed(1)}%`);
+    console.log(`BACKTEST MERAH < -1%: ${backtest.criteria["MERAH: Close < -1%"].tp1WinRate.toFixed(1)}%`);
+    console.log(`BACKTEST CLOSE > -1%: ${backtest.criteria["CLOSE_>-1%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>-1%"].tp1WinRate.toFixed(1)}%`);
   }
   console.table(
     qualified.slice(0, 20).map((r) => ({

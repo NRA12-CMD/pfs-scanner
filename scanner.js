@@ -1,4 +1,4 @@
-// PFS Scanner V66 HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V66.2 CHART 30 CANDLE - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -98,6 +98,8 @@ const CFG = {
 
   MAX_RESULTS: 50,
   DISPLAY_DAYS: 20,
+  CHART_CANDLES: 30,
+  PRICE_CHANNEL_PERIOD: 10,
   VOLATILITY_TOP_ATR_PCT: 5.50,
   VOLATILITY_STRONG_ATR_PCT: 2.00,
   VOLATILITY_MIN_ATR_PCT: 1.00,
@@ -841,6 +843,132 @@ function screenScore(stock, calc) {
   };
 }
 
+
+function calculateChartData(stock, candles = CFG.CHART_CANDLES) {
+  const src = stock.slice(-candles);
+  if (!src.length) return [];
+
+  const closes = stock.map(x => Number(x.close) || 0);
+  const ema = (values, period) => {
+    if (!values.length) return [];
+    const k = 2 / (period + 1);
+    const out = [];
+    let e = values[0];
+    out.push(e);
+    for (let i = 1; i < values.length; i++) {
+      e = values[i] * k + e * (1 - k);
+      out.push(e);
+    }
+    return out;
+  };
+
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+  let obv = 0;
+  const obvArr = [];
+  for (let i = 0; i < stock.length; i++) {
+    if (i > 0) {
+      if (stock[i].close > stock[i - 1].close) obv += Number(stock[i].volume) || 0;
+      else if (stock[i].close < stock[i - 1].close) obv -= Number(stock[i].volume) || 0;
+    }
+    obvArr.push(obv);
+  }
+
+  return src.map((bar, localIndex) => {
+    const i = stock.length - src.length + localIndex;
+    const start = Math.max(0, i - CFG.PRICE_CHANNEL_PERIOD + 1);
+    const window = stock.slice(start, i + 1);
+    const pcHigh = Math.max(...window.map(x => Number(x.high) || 0));
+    const pcLow = Math.min(...window.map(x => Number(x.low) || 0));
+    const rsi14 = calcRSI(stock, i, 14);
+    const ema8all = ema(closes, 8);
+    const ema14all = ema(closes, 14);
+    const macdLine = ema8all[i] - ema14all[i];
+    const macdSeries = stock.map((_, k) => ema8all[k] - ema14all[k]);
+    const macdSignalSeries = ema(macdSeries, 9);
+    const macdHist = macdLine - macdSignalSeries[i];
+    return {
+      date: dateKey(bar.date),
+      open: Number(bar.open),
+      high: Number(bar.high),
+      low: Number(bar.low),
+      close: Number(bar.close),
+      volume: Number(bar.volume) || 0,
+      ema20: Number(ema20[i]),
+      ema50: Number(ema50[i]),
+      priceChannelHigh10: pcHigh,
+      priceChannelLow10: pcLow,
+      rsi14: Number(rsi14),
+      macdHist: Number.isFinite(Number(macdHist)) ? Number(macdHist) : 0,
+      obv: Number(obvArr[i]) || 0,
+    };
+  });
+}
+
+function svgEsc(v) {
+  return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+function makeStockChartSVG(ticker, chartData) {
+  if (!chartData?.length) return "";
+  const W = 1200, H = 900;
+  const left = 70, right = 25, top = 55, gap = 35;
+  const mainH = 430, rsiH = 130, macdH = 130, volH = 100;
+  const plotW = W - left - right;
+  const n = chartData.length;
+  const x = i => left + (n === 1 ? plotW / 2 : i * plotW / (n - 1));
+  const allPrices = chartData.flatMap(d => [d.high, d.low, d.ema20, d.ema50, d.priceChannelHigh10, d.priceChannelLow10]).filter(Number.isFinite);
+  const minP = Math.min(...allPrices), maxP = Math.max(...allPrices);
+  const padP = Math.max((maxP - minP) * 0.08, maxP * 0.005 || 1);
+  const pMin = minP - padP, pMax = maxP + padP;
+  const py = v => top + (pMax - v) / (pMax - pMin) * mainH;
+  const rsiTop = top + mainH + gap;
+  const ry = v => rsiTop + (100 - v) / 100 * rsiH;
+  const macdTop = rsiTop + rsiH + gap;
+  const macds = chartData.map(d => d.macdHist).filter(Number.isFinite);
+  const maxM = Math.max(...macds.map(Math.abs), 0.000001) * 1.15;
+  const my = v => macdTop + (maxM - v) / (2 * maxM) * macdH;
+  const volTop = macdTop + macdH + gap;
+  const maxV = Math.max(...chartData.map(d => d.volume), 1);
+  const vy = v => volTop + (maxV - v) / maxV * volH;
+  const cw = Math.max(5, Math.min(16, plotW / n * 0.58));
+  const line = (key, mapper) => chartData.map((d,i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${mapper(d[key]).toFixed(1)}`).join(" ");
+  const candle = chartData.map((d,i) => {
+    const xx=x(i), yO=py(d.open), yC=py(d.close), yH=py(d.high), yL=py(d.low);
+    const y=Math.min(yO,yC), h=Math.max(1,Math.abs(yC-yO));
+    const up=d.close>=d.open;
+    return `<line x1="${xx.toFixed(1)}" y1="${yH.toFixed(1)}" x2="${xx.toFixed(1)}" y2="${yL.toFixed(1)}" stroke="${up ? '#15803d' : '#dc2626'}" stroke-width="1.5"/><rect x="${(xx-cw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${h.toFixed(1)}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
+  }).join("");
+  const macdBars = chartData.map((d,i) => {
+    const xx=x(i)-cw/2, y0=my(0), y=my(d.macdHist), h=Math.max(1,Math.abs(y-y0));
+    return `<rect x="${xx.toFixed(1)}" y="${Math.min(y,y0).toFixed(1)}" width="${cw.toFixed(1)}" height="${h.toFixed(1)}" fill="${d.macdHist>=0?'#16a34a':'#ef4444'}" opacity="0.75"/>`;
+  }).join("");
+  const volumes = chartData.map((d,i) => `<rect x="${(x(i)-cw/2).toFixed(1)}" y="${vy(d.volume).toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(1,volTop+volH-vy(d.volume)).toFixed(1)}" fill="${d.close>=d.open?'#16a34a':'#ef4444'}" opacity="0.65"/>`).join("");
+  const labels = chartData.map((d,i) => i % 5 === 0 || i === n-1 ? `<text x="${x(i).toFixed(1)}" y="${H-8}" font-size="11" text-anchor="middle" fill="#555">${svgEsc(d.date.slice(5))}</text>` : "").join("");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="100%" height="100%" fill="white"/>
+<text x="${left}" y="28" font-size="22" font-family="Arial" font-weight="700">${svgEsc(ticker)} — 30 Candlestick</text>
+<text x="${left}" y="48" font-size="12" font-family="Arial" fill="#555">EMA20 • EMA50 • Price Channel 10 • RSI14 • MACD Histogram • Volume</text>
+<g stroke="#e5e7eb" stroke-width="1">${[0.25,0.5,0.75].map(q=>`<line x1="${left}" y1="${(top+mainH*q).toFixed(1)}" x2="${W-right}" y2="${(top+mainH*q).toFixed(1)}"/>`).join("")}</g>
+${candle}
+<path d="${line('priceChannelHigh10',py)}" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 4"/>
+<path d="${line('priceChannelLow10',py)}" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 4"/>
+<path d="${line('ema20',py)}" fill="none" stroke="#2563eb" stroke-width="2"/>
+<path d="${line('ema50',py)}" fill="none" stroke="#f59e0b" stroke-width="2"/>
+<text x="${left}" y="${rsiTop-10}" font-size="13" font-family="Arial" font-weight="700">RSI14</text>
+<line x1="${left}" y1="${ry(70)}" x2="${W-right}" y2="${ry(70)}" stroke="#d1d5db" stroke-dasharray="4 4"/>
+<line x1="${left}" y1="${ry(30)}" x2="${W-right}" y2="${ry(30)}" stroke="#d1d5db" stroke-dasharray="4 4"/>
+<path d="${line('rsi14',ry)}" fill="none" stroke="#0891b2" stroke-width="2"/>
+<text x="${left}" y="${macdTop-10}" font-size="13" font-family="Arial" font-weight="700">MACD Histogram</text>
+<line x1="${left}" y1="${my(0)}" x2="${W-right}" y2="${my(0)}" stroke="#9ca3af"/>
+${macdBars}
+<text x="${left}" y="${volTop-10}" font-size="13" font-family="Arial" font-weight="700">Volume</text>
+${volumes}
+${labels}
+</svg>`;
+}
+
 function parseYahooHistoryBody(json, symbol) {
   if (!json.chart?.result?.length) {
     const err = json.chart?.error
@@ -987,7 +1115,7 @@ function toCSV(rows) {
     "AKUMULASI_1D","RATA_AKUMULASI_1D","AKUMULASI_5D","RATA_AKUMULASI_5D",
     "AKUMULASI_10D","RATA_AKUMULASI_10D","CLOSE","PERUBAHAN_PCT",
     "RSI14","EMA20","EMA50","MACD_HIST","VOL_VS_AVG20","ATR14_PCT",
-    "20D_HIGH","RSR20","RSR60","CANDLE","TREND","ALASAN"
+    "20D_HIGH","RSR20","RSR60","CANDLE","TREND","ALASAN","CHART_30_CANDLE"
   ];
 
   const esc = (v) => {
@@ -1003,7 +1131,7 @@ function toCSV(rows) {
       r.accumulationAvg5d, r.accumulation10d, r.accumulationAvg10d,
       r.close, r.changePct, r.rsi, r.ema20, r.ema50, r.macdHist,
       r.volRatio, r.atrPct, r.high20, r.rsr20, r.rsr60,
-      r.candle, r.trend, r.reason
+      r.candle, r.trend, r.reason, r.chart30File
     ].map(esc).join(","));
   }
   return lines.join("\n") + "\n";
@@ -1912,6 +2040,7 @@ async function main() {
         candle: s.candle,
         trend: s.trend,
         reason: s.reason,
+        chart30: calculateChartData(stock, CFG.CHART_CANDLES),
       });
     } catch (error) {
       errors.push({ ticker, error: error.message });
@@ -1954,6 +2083,17 @@ async function main() {
   qualified.forEach((r, i) => {
     r.rank = i + 1;
   });
+
+  // V66.2 CHART: hanya saham yang LOLOS filter yang dibuatkan chart.
+  // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume.
+  await fs.mkdir("output/charts", { recursive: true });
+  for (const r of qualified) {
+    const safeTicker = String(r.ticker).replace(/[^A-Za-z0-9_-]/g, "_");
+    const chartFile = `output/charts/${safeTicker}_30CANDLE.svg`;
+    await fs.writeFile(chartFile, makeStockChartSVG(r.ticker, r.chart30), "utf8");
+    r.chart30File = chartFile;
+    r.chart30Candles = r.chart30.length;
+  }
 
   await fs.mkdir("output", { recursive: true });
   await fs.writeFile(
@@ -2072,6 +2212,7 @@ async function main() {
   console.log(`Selesai. Dicek: ${symbols.length}`);
   console.log(`Berhasil: ${results.length}`);
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
+  console.log(`CHART: ${qualified.length} file SVG (30 candle + EMA20/50 + PC10 + RSI14 + MACD + Volume)`);
   console.log(`Error: ${errors.length}`);
   if (shouldRunBacktest && backtest) {
     console.log(`BACKTEST MERAH < -1%: ${backtest.criteria["MERAH: Close < -1%"].tp1WinRate.toFixed(1)}%`);

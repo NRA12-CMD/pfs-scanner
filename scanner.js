@@ -1,5 +1,5 @@
-// PFS Scanner V64.3.1 FAST 100D - BACKTEST OUTPUT FIX
-// PFS Scanner V64.3.1 - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
+// PFS Scanner V64.3 FAST 100D
+// PFS Scanner V64.2 FAST - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
@@ -17,6 +17,10 @@
 //   symbols.json  -> ["BBRI","BBCA",...]
 // Or environment:
 //   PFS_SYMBOLS=BBRI,BBCA,ANTM
+//
+// Modes:
+//   BOT_MODE=1 node scanner.js          -> Telegram command server
+//   BACKTEST_ONLY=1 node scanner.js     -> backtest sekali lalu selesai
 //
 // Output:
 //   output/screening.json
@@ -89,6 +93,10 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function ensureOutputDir() {
+  await fs.mkdir(path.resolve(process.cwd(), "output"), { recursive: true });
+}
 
 function num(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -1067,11 +1075,7 @@ function evaluateForwardOutcome(stock, entryIndex) {
 }
 
 async function runBacktest(fetched, ihsg) {
-  // FIX: pastikan folder output ada sebelum menulis hasil backtest.
-  // Sebelumnya writeFile("output/backtest.json") dipanggil saat folder belum dibuat,
-  // sehingga GitHub Actions gagal dengan ENOENT / no such file or directory.
-  await fs.mkdir("output", { recursive: true });
-
+  await ensureOutputDir();
   const trades = [];
   const perStock = [];
 
@@ -1225,18 +1229,20 @@ async function sendTelegramTo(chatId, message) {
 
 function commandHelp() {
   return [
-    "🤖 PFS BACKTEST CONTROLLER V64",
+    "🤖 PFS BACKTEST CONTROLLER V64.4",
     "━━━━━━━━━━━━━━━━━━━━",
     "/backtest — jalankan backtest lengkap",
     "/backtest_merah — hanya close -1% s/d <0%",
     "/backtest_hijau — hanya close >=0%",
     "/backtest_status — cek proses berjalan",
     "/backtest_hasil — hasil backtest terakhir",
+    "/ping — cek bot aktif",
     "/help — daftar perintah",
     "━━━━━━━━━━━━━━━━━━━━",
     `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D`,
   ].join("\n");
 }
+
 
 function formatBacktestCriterion(label, x) {
   return [
@@ -1315,6 +1321,13 @@ async function telegramBotLoop() {
   const allowedChatId = process.env.TELEGRAM_CHAT_ID ? String(process.env.TELEGRAM_CHAT_ID) : null;
   let offset = 0;
 
+  // Pastikan polling tidak bentrok dengan webhook lama.
+  try {
+    await telegramApi("deleteWebhook", { drop_pending_updates: false });
+  } catch (e) {
+    console.error("Gagal menghapus webhook Telegram:", e.message);
+  }
+
   // Abaikan pesan lama agar server tidak mengeksekusi perintah tertunda saat pertama hidup.
   try {
     const old = await telegramApi("getUpdates", { timeout: 0, limit: 100 });
@@ -1339,11 +1352,13 @@ async function telegramBotLoop() {
         const command = msg.text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
         if (command === "/help" || command === "/start") {
           await sendTelegramTo(chatId, commandHelp());
-        } else if (command === "/backtest") {
+        } else if (command === "/ping") {
+          await sendTelegramTo(chatId, "🟢 PFS BOT AKTIF dan siap menerima perintah.");
+        } else if (command === "/backtest" || command === "/bt") {
           void runTelegramBacktestCommand(chatId, "all");
-        } else if (command === "/backtest_merah") {
+        } else if (command === "/backtest_merah" || command === "/bt_merah") {
           void runTelegramBacktestCommand(chatId, "red");
-        } else if (command === "/backtest_hijau") {
+        } else if (command === "/backtest_hijau" || command === "/bt_hijau") {
           void runTelegramBacktestCommand(chatId, "green");
         } else if (command === "/backtest_status") {
           await sendTelegramTo(chatId,
@@ -1375,6 +1390,7 @@ async function telegramBotLoop() {
 }
 
 async function main() {
+  await ensureOutputDir();
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
@@ -1663,12 +1679,24 @@ async function main() {
 }
 
 const BOT_MODE = String(process.env.BOT_MODE || "").toLowerCase();
+const BACKTEST_ONLY = String(process.env.BACKTEST_ONLY || "").toLowerCase();
 
 if (BOT_MODE === "1" || BOT_MODE === "true" || process.argv.includes("--bot")) {
   telegramBotLoop().catch((error) => {
     console.error("TELEGRAM BOT GAGAL:", error);
     process.exitCode = 1;
   });
+} else if (BACKTEST_ONLY === "1" || BACKTEST_ONLY === "true" || process.argv.includes("--backtest")) {
+  ensureOutputDir()
+    .then(() => getBacktestDataAndRun())
+    .then((result) => {
+      console.log("BACKTEST SELESAI");
+      console.log(JSON.stringify(result.criteria, null, 2));
+    })
+    .catch((error) => {
+      console.error("BACKTEST GAGAL:", error);
+      process.exitCode = 1;
+    });
 } else {
   main().catch((error) => {
     console.error("SCREENING GAGAL:", error);

@@ -1941,6 +1941,7 @@ async function main() {
       const trendScore = calculateTrendScore(stock, calc, s);
       const timingScore = calculateTimingScore(stock, calc, s);
       const entry = calculateEntryDecision(s.score, eas.score, trendScore, timingScore);
+      const highWinrate = highWinratePass(stock, calc, s, eas, trendScore, timingScore, entry);
       const last = stock.at(-1);
       const prev = stock.at(-2);
 
@@ -1990,42 +1991,33 @@ async function main() {
         candle: s.candle,
         trend: s.trend,
         reason: s.reason,
+        highWinratePass: highWinrate.pass,
+        highWinrateFailed: highWinrate.reasons,
+        ohlcScore: highWinrate.ohlc?.score ?? null,
+        ohlcLabel: highWinrate.ohlc?.label ?? null,
+        ohlcBodyRatio: highWinrate.ohlc?.bodyRatio ?? null,
+        ohlcCloseLocation: highWinrate.ohlc?.closeLocation ?? null,
+        ohlcUpperWickRatio: highWinrate.ohlc?.upperWickRatio ?? null,
       });
     } catch (error) {
       errors.push({ ticker, error: error.message });
     }
   }
 
-  // V62 STRICT: semua skor utama menjadi FILTER WAJIB, bukan sekadar ranking.
-  // PFS >= 75, EAS >= 55, Trend >= 60, Timing >= 55, Entry >= 70, dan UPTREND.
-  // Dengan demikian penambahan skor benar-benar mengurangi kandidat yang lolos.
-  const rejectedByStrictFilter = results.filter((r) => {
-    const passPFS = r.score >= CFG.QUALIFY_MIN_PFS;
-    const passEAS = r.earlyAccumulationScore >= CFG.QUALIFY_MIN_EAS;
-    const passTrend = r.trendScore >= CFG.QUALIFY_MIN_TREND;
-    const passTiming = r.timingScore >= CFG.QUALIFY_MIN_TIMING;
-    const passEntry = r.entryScore >= CFG.QUALIFY_MIN_ENTRY;
-    const passTrendQuality = !CFG.REQUIRE_UPTREND || r.trendQuality === "UPTREND";
-    return !(passPFS && passEAS && passTrend && passTiming && passEntry && passTrendQuality);
-  }).length;
+  // V67.3 HIGH WINRATE: hanya saham yang lolos SELURUH filter HIGH WINRATE + OHLC yang boleh keluar.
+  // Saham yang gagal satu saja tidak dimasukkan ke screening Telegram/CSV/JSON.
+  const rejectedByStrictFilter = results.filter((r) => !r.highWinratePass).length;
 
   const qualified = results
-    .filter((r) => {
-      const passPFS = r.score >= CFG.QUALIFY_MIN_PFS;
-      const passEAS = r.earlyAccumulationScore >= CFG.QUALIFY_MIN_EAS;
-      const passTrend = r.trendScore >= CFG.QUALIFY_MIN_TREND;
-      const passTiming = r.timingScore >= CFG.QUALIFY_MIN_TIMING;
-      const passEntry = r.entryScore >= CFG.QUALIFY_MIN_ENTRY;
-      const passTrendQuality = !CFG.REQUIRE_UPTREND || r.trendQuality === "UPTREND";
-      return passPFS && passEAS && passTrend && passTiming && passEntry && passTrendQuality;
-    })
+    .filter((r) => r.highWinratePass)
     .sort(
       (a, b) =>
         b.entryScore - a.entryScore ||
         b.score - a.score ||
         b.trendScore - a.trendScore ||
         b.timingScore - a.timingScore ||
-        b.earlyAccumulationScore - a.earlyAccumulationScore
+        b.earlyAccumulationScore - a.earlyAccumulationScore ||
+        (b.ohlcScore ?? 0) - (a.ohlcScore ?? 0)
     )
     .slice(0, CFG.MAX_RESULTS);
 
@@ -2080,15 +2072,13 @@ async function main() {
   };
 
   let telegramText =
-    "📊 PFS SCREENING IDX - V62 STRICT\n" +
+    "📊 PFS SCREENING IDX - V67.3 HIGH WINRATE\n" +
     `Total LOLOS : ${qualified.length}\n` +
-    `Filter PFS  : >= ${CFG.QUALIFY_MIN_PFS}\n` +
-    `EAS/Timing  : >= ${CFG.QUALIFY_MIN_EAS} / >= ${CFG.QUALIFY_MIN_TIMING}\n` +
-    `Trend/Entry : >= ${CFG.QUALIFY_MIN_TREND} / >= ${CFG.QUALIFY_MIN_ENTRY}\n` +
-    `Trend wajib : ${CFG.REQUIRE_UPTREND ? "UPTREND" : "TIDAK"}\n` +
+    `HIGH WINRATE : PFS>=${CFG.HIGH_WINRATE_MIN_PFS} | EAS>=${CFG.HIGH_WINRATE_MIN_EAS} | Trend>=${CFG.HIGH_WINRATE_MIN_TREND} | Timing>=${CFG.HIGH_WINRATE_MIN_TIMING} | Entry>=${CFG.HIGH_WINRATE_MIN_ENTRY}\n` +
+    `OHLC>=${CFG.OHLC_MIN_SCORE} | RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION}\n` +
     `Dicek       : ${symbols.length}\n` +
     `Berhasil    : ${results.length}\n` +
-    `Ditolak     : ${rejectedByStrictFilter}\n` +
+    `Gagal filter: ${rejectedByStrictFilter} (tidak ditampilkan)\n` +
     `Error       : ${errors.length}\n` +
     "━━━━━━━━━━━━━━━━━━━━\n";
 
@@ -2109,6 +2099,7 @@ async function main() {
         `⏱ TIMING   : ${fmtInt(r.timingScore)}/100\n` +
         `📈 TREND    : ${fmtInt(r.trendScore)}/100 | ${cleanText(r.trendQuality)}\n` +
         `🟢 EAS      : ${fmtInt(r.earlyAccumulationScore)}/100 | ${cleanText(r.earlyAccumulationLabel)}\n` +
+        `🟣 OHLC     : ${fmtInt(r.ohlcScore)}/100 | ${cleanText(r.ohlcLabel)}\n` +
         `Vol        : ${cleanText(r.volatility)}\n` +
         `Akum 1D    : ${cleanText(r.accumulation)} | Avg 1D  : ${fmtNum(r.accumulationAvg1d)}\n` +
         `Akum 5D    : ${cleanText(r.accumulation5d)} | Avg 5D  : ${fmtNum(r.accumulationAvg5d)}\n` +

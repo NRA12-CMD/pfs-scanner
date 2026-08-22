@@ -1188,7 +1188,7 @@ async function runBacktest(fetched, ihsg) {
 // Server mode lama: BOT_MODE=1 node scanner.js
 // GitHub Actions mode: TELEGRAM_ONESHOT=1 node scanner.js
 // Perintah: /backtest, /backtest_merah, /backtest_hijau,
-//           /backtest_status, /backtest_hasil, /help
+//           /backtest_status, /backtest_hasil, /screening, /help
 // ============================================================
 let BACKTEST_RUNNING = false;
 let LAST_BACKTEST_AT = null;
@@ -1228,6 +1228,7 @@ function commandHelp() {
     "/backtest_hijau — hanya close >=0%",
     "/backtest_status — cek proses berjalan",
     "/backtest_hasil — hasil backtest terakhir",
+    "/screening — jalankan screening IDX",
     "/help — daftar perintah",
     "━━━━━━━━━━━━━━━━━━━━",
     `TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D`,
@@ -1306,6 +1307,30 @@ async function runTelegramBacktestCommand(chatId, mode) {
   }
 }
 
+async function runTelegramScreeningCommand(chatId) {
+  await sendTelegramTo(chatId,
+    "⏳ SCREENING DIMULAI\n\n" +
+    "📊 PFS + EAS + Timing + Trend + Entry\n" +
+    `PFS minimum: ${CFG.QUALIFY_MIN_PFS} | Entry minimum: ${CFG.QUALIFY_MIN_ENTRY}\n` +
+    "Server sedang menghitung..."
+  );
+
+  const oldChatId = process.env.TELEGRAM_CHAT_ID;
+  const oldRunBacktest = process.env.RUN_BACKTEST;
+  try {
+    process.env.TELEGRAM_CHAT_ID = String(chatId);
+    process.env.RUN_BACKTEST = "0";
+    await main();
+  } catch (error) {
+    await sendTelegramTo(chatId, `❌ SCREENING GAGAL\n\n${error.message}`);
+  } finally {
+    if (oldChatId === undefined) delete process.env.TELEGRAM_CHAT_ID;
+    else process.env.TELEGRAM_CHAT_ID = oldChatId;
+    if (oldRunBacktest === undefined) delete process.env.RUN_BACKTEST;
+    else process.env.RUN_BACKTEST = oldRunBacktest;
+  }
+}
+
 async function telegramBotOneShot() {
   if (!process.env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN belum diatur.");
 
@@ -1341,15 +1366,12 @@ async function telegramBotOneShot() {
 
   const latestUpdateId = updates[updates.length - 1].update_id;
 
-  // Run pertama: buang pesan lama. Perintah baru mulai dibaca pada polling berikutnya.
-  if (!hasState) {
-    await fs.writeFile(offsetFile, JSON.stringify({ offset: latestUpdateId + 1, initializedAt: new Date().toISOString() }, null, 2));
-    console.log("Telegram: controller diinisialisasi. Pesan lama diabaikan.");
-    return;
-  }
+  // Run pertama: pesan lama diabaikan, tetapi perintah yang dikirim maksimal 15 menit
+  // sebelum workflow berjalan tetap boleh dieksekusi. Ini mencegah /backtest baru ikut terbuang.
+  const initCutoff = Math.floor(Date.now() / 1000) - 15 * 60;
   const allowedCommands = new Set([
     "/help", "/start", "/backtest", "/backtest_merah", "/backtest_hijau",
-    "/backtest_status", "/backtest_hasil"
+    "/backtest_status", "/backtest_hasil", "/screening"
   ]);
   const recognized = [];
 
@@ -1358,6 +1380,7 @@ async function telegramBotOneShot() {
     if (!msg?.text) continue;
     const chatId = String(msg.chat.id);
     if (allowedChatId && chatId !== allowedChatId) continue;
+    if (!hasState && Number(msg.date || 0) < initCutoff) continue;
     const command = msg.text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
     if (allowedCommands.has(command)) recognized.push({ updateId: update.update_id, chatId, command });
   }
@@ -1390,9 +1413,11 @@ async function telegramBotOneShot() {
       await sendTelegramTo(cmd.chatId,
         "📡 GITHUB ACTIONS STATUS\n━━━━━━━━━━━━━━━━━━━━\n" +
         "✅ Controller aktif\n" +
-        "⏱ Polling Telegram: sekitar 5 menit\n" +
+        "⏱ Polling Telegram: maksimal sekitar 5 menit\n" +
         `📊 ${status}`
       );
+    } else if (cmd.command === "/screening") {
+      await runTelegramScreeningCommand(cmd.chatId);
     } else if (cmd.command === "/backtest_hasil") {
       try {
         const raw = await fs.readFile("output/backtest.json", "utf8");
@@ -1457,6 +1482,8 @@ async function telegramBotLoop() {
               ? "⏳ BACKTEST SEDANG BERJALAN..."
               : `✅ SERVER SIAP. Backtest terakhir: ${LAST_BACKTEST_AT ? LAST_BACKTEST_AT.toLocaleString("id-ID") : "belum ada sejak server aktif"}`
           );
+        } else if (command === "/screening") {
+          await runTelegramScreeningCommand(chatId);
         } else if (command === "/backtest_hasil") {
           try {
             const raw = await fs.readFile("output/backtest.json", "utf8");
@@ -1481,6 +1508,7 @@ async function telegramBotLoop() {
 }
 
 async function main() {
+  const runBacktest = String(process.env.RUN_BACKTEST ?? "1") !== "0";
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
@@ -1509,10 +1537,15 @@ async function main() {
     CFG.CONCURRENCY
   );
 
-  // V63 BACKTEST: dijalankan dari data historis yang sama, tanpa look-ahead.
-  console.log("Menjalankan backtest 2 kriteria close...");
-  const backtest = await runBacktest(fetched, ihsg);
-  console.log("Backtest selesai:", JSON.stringify(backtest.criteria, null, 2));
+  let backtest = null;
+  if (runBacktest) {
+    // V64 BACKTEST: dijalankan dari data historis yang sama, tanpa look-ahead.
+    console.log("Menjalankan backtest 2 kriteria close...");
+    backtest = await runBacktest(fetched, ihsg);
+    console.log("Backtest selesai:", JSON.stringify(backtest.criteria, null, 2));
+  } else {
+    console.log("Mode screening-only: backtest dilewati.");
+  }
 
   const results = [];
   const errors = [];
@@ -1730,14 +1763,16 @@ async function main() {
     });
   }
 
-  const btRed = backtest.criteria["MERAH_-1%_SAMPAI_0%"];
-  const btGreen = backtest.criteria["CLOSE_>=_0%"];
-  telegramText +=
-    "\n🧪 BACKTEST V63 - 2 KRITERIA\n" +
-    `Target : TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
-    `🔴 MERAH -1% s/d <0% : ${btRed.signals} sinyal | TP1 WR ${btRed.tp1WinRate.toFixed(1)}% | TP2 WR ${btRed.tp2WinRate.toFixed(1)}% | SL ${btRed.slRate.toFixed(1)}%\n` +
-    `🟢 CLOSE >=0%        : ${btGreen.signals} sinyal | TP1 WR ${btGreen.tp1WinRate.toFixed(1)}% | TP2 WR ${btGreen.tp2WinRate.toFixed(1)}% | SL ${btGreen.slRate.toFixed(1)}%\n` +
-    "━━━━━━━━━━━━━━━━━━━━\n";
+  if (runBacktest && backtest) {
+    const btRed = backtest.criteria["MERAH_-1%_SAMPAI_0%"];
+    const btGreen = backtest.criteria["CLOSE_>=_0%"];
+    telegramText +=
+      "\n🧪 BACKTEST V64 - 2 KRITERIA\n" +
+      `Target : TP1 +${CFG.BACKTEST_TP1_PCT}% | TP2 +${CFG.BACKTEST_TP2_PCT}% | SL -${CFG.BACKTEST_SL_PCT}% | Horizon ${CFG.BACKTEST_HORIZON_DAYS}D\n` +
+      `🔴 MERAH -1% s/d <0% : ${btRed.signals} sinyal | TP1 WR ${btRed.tp1WinRate.toFixed(1)}% | TP2 WR ${btRed.tp2WinRate.toFixed(1)}% | SL ${btRed.slRate.toFixed(1)}%\n` +
+      `🟢 CLOSE >=0%        : ${btGreen.signals} sinyal | TP1 WR ${btGreen.tp1WinRate.toFixed(1)}% | TP2 WR ${btGreen.tp2WinRate.toFixed(1)}% | SL ${btGreen.slRate.toFixed(1)}%\n` +
+      "━━━━━━━━━━━━━━━━━━━━\n";
+  }
 
   const TELEGRAM_LIMIT = 3800;
   for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
@@ -1749,8 +1784,10 @@ async function main() {
   console.log(`Berhasil: ${results.length}`);
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
   console.log(`Error: ${errors.length}`);
-  console.log(`BACKTEST MERAH -1% s/d <0%: ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].signals} sinyal | TP1 WR ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].tp1WinRate.toFixed(1)}%`);
-  console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>=_0%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>=_0%"].tp1WinRate.toFixed(1)}%`);
+  if (runBacktest && backtest) {
+    console.log(`BACKTEST MERAH -1% s/d <0%: ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].signals} sinyal | TP1 WR ${backtest.criteria["MERAH_-1%_SAMPAI_0%"].tp1WinRate.toFixed(1)}%`);
+    console.log(`BACKTEST CLOSE >=0%: ${backtest.criteria["CLOSE_>=_0%"].signals} sinyal | TP1 WR ${backtest.criteria["CLOSE_>=_0%"].tp1WinRate.toFixed(1)}%`);
+  }
   console.table(
     qualified.slice(0, 20).map((r) => ({
       RANK: r.rank,

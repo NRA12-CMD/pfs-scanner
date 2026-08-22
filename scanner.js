@@ -1,4 +1,4 @@
-/ PFS Scanner V64.4 GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V64.4 GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V64.2 FAST - PFS + EAS + Timing + Trend + Entry + Telegram Backtest Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs

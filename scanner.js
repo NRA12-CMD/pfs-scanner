@@ -586,7 +586,71 @@ function screenScore(stock, calc) {
 
   if (!reasons.length) reasons.push("Belum memenuhi filter utama");
 
+  // ===============================
+// TP / SL / STATUS ENTRY OTOMATIS
+// ===============================
+
+const entryPrice = x.close;
+
+// ATR14 dalam persen -> ubah menjadi nilai harga
+const atr14Value = entryPrice * (atrPct / 100);
+
+const sl = entryPrice - (atr14Value * 1.5);
+const tp1 = entryPrice + (atr14Value * 1.5);
+const tp2 = entryPrice + (atr14Value * 3.0);
+
+// Status entry berdasarkan PFS + trend + akumulasi
+let entryStatus = "WAIT";
+
+if (
+  score >= 90 &&
+  trendQuality === "UPTREND" &&
+  accumulation === "KUAT"
+) {
+  entryStatus = "ENTRY KUAT";
+} else if (
+  score >= 80 &&
+  trendQuality === "UPTREND"
+) {
+  entryStatus = "ENTRY";
+} else if (
+  score >= 70 &&
+  trendQuality !== "LEMAH"
+) {
+  entryStatus = "WATCH";
+}
+
   return {
+   return {
+  score,
+  signal,
+  entryPrice,
+  tp1,
+  tp2,
+  sl,
+  entryStatus,
+
+  rsi,
+  ema50,
+  prevClose,
+  changePct,
+  volRatio,
+  atrPct,
+  atrScore: volatility10Score,
+  volatility10Pct,
+  volatility10Label,
+  trendQuality,
+  accumulationScore,
+  accumulation5d: accumulation5d.label,
+  accumulation5dScore: accumulation5d.score,
+  accumulation10d: accumulation10d.label,
+  accumulation10dScore: accumulation10d.score,
+  high20,
+  distHigh,
+  candle,
+  trend,
+  reason: reasons.join(" | ")
+};
     score, signal, rsi, ema50,
     prevClose: prev?.close ?? null,
     changePct: dailyChangePct,

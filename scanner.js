@@ -462,14 +462,20 @@ function calculateEarlyAccumulationScore(stock, calc) {
 
   const close = Number(last.close);
   const prevClose = Number(prev.close);
-  const volRatio = Number(calc.latest.volRatio ?? 0);
-  const rsi = Number(calc.latest.rsi ?? 0);
-  const macdHist = Number(calc.latest.macdHist ?? 0);
+
+  // V61.1 FIX:
+  // Jangan mengambil volRatio/RSI/EMA50 dari calc.latest karena field tersebut
+  // memang tidak disimpan di calculateIndicators(). Hitung ulang di sini
+  // supaya Early Accumulation Score benar-benar terisi.
+  const avg20Vol = average(stock.slice(-20).map((x) => Number(x.volume) || 0));
+  const volRatio = avg20Vol > 0 ? (Number(last.volume) || 0) / avg20Vol : 0;
+  const rsi = calcRSI(stock, stock.length - 1, 14);
   const ema20 = Number(calc.latest.ema20 ?? 0);
-  const ema50 = Number(calc.latest.ema50 ?? 0);
+  const ema50 = calcEMAAt(stock.map((x) => Number(x.close) || 0), 50);
+  const macdHist = Number(calc.latest.macdHist ?? 0);
 
   const lookback = stock.slice(Math.max(0, stock.length - 20));
-  const high20 = Math.max(...lookback.map(x => Number(x.close) || 0));
+  const high20 = Math.max(...lookback.map((x) => Number(x.high) || 0));
   const nearHigh = high20 > 0 ? close / high20 : 0;
 
   let score = 0;
@@ -810,8 +816,8 @@ async function loadSymbols() {
 
 function toCSV(rows) {
   const headers = [
-    "RANK","SAHAM","PFS","SIGNAL","VOLATILITAS","AKUMULASI_1D",
-    "RATA_AKUMULASI_1D","AKUMULASI_5D","RATA_AKUMULASI_5D",
+    "RANK","SAHAM","PFS","SIGNAL","VOLATILITAS","EAS","EARLY_ACCUMULATION",
+    "AKUMULASI_1D","RATA_AKUMULASI_1D","AKUMULASI_5D","RATA_AKUMULASI_5D",
     "AKUMULASI_10D","RATA_AKUMULASI_10D","CLOSE","PERUBAHAN_PCT",
     "RSI14","EMA20","EMA50","MACD_HIST","VOL_VS_AVG20","ATR14_PCT",
     "20D_HIGH","RSR20","RSR60","CANDLE","TREND","ALASAN"
@@ -840,7 +846,7 @@ async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V59 Node.js`);
+  console.log(`PFS Scanner V61.1 EARLY ACCUMULATION RADAR Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`Universe    : ${symbols.length} saham`);
   console.log(`Max output  : ${CFG.MAX_RESULTS}`);
@@ -938,12 +944,21 @@ async function main() {
     }
   }
 
-  results.sort((a, b) => b.score - a.score);
+  // PFS tetap menjadi ranking utama; EAS menjadi tie-breaker.
+  results.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.earlyAccumulationScore - a.earlyAccumulationScore
+  );
 
-  // V59: minimum PFS 62 + ranking + hard cap 50.
+  // V61.1: minimum PFS 62 + ranking PFS + EAS sebagai tie-breaker + cap 50.
   const qualified = results
     .filter((r) => r.score >= CFG.MIN_SCORE)
-    .sort((a, b) => b.score - a.score)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.earlyAccumulationScore - a.earlyAccumulationScore
+    )
     .slice(0, CFG.MAX_RESULTS);
 
   qualified.forEach((r, i) => {
@@ -1017,21 +1032,23 @@ async function main() {
     qualified.forEach((r, i) => {
       telegramText +=
         `${i + 1}. ${r.ticker} | PFS ${fmtInt(r.score)} | ${r.signal || "-"}\n` +
-        `Vol       : ${cleanText(r.volatility)}\n` +
-        `Akum 1D   : ${cleanText(r.accumulation)} | Avg 1D  : ${fmtNum(r.accumulationAvg1d)}\n` +
-        `Akum 5D   : ${cleanText(r.accumulation5d)} | Avg 5D  : ${fmtNum(r.accumulationAvg5d)}\n` +
-        `Akum 10D  : ${cleanText(r.accumulation10d)} | Avg 10D: ${fmtNum(r.accumulationAvg10d)}\n` +
-        `Close     : ${fmtNum(r.close, 0)} | Chg : ${fmtPct(r.changePct)}\n` +
-        `RSI14     : ${fmtNum(r.rsi14)}\n` +
-        `EMA20     : ${fmtNum(r.ema20)}\n` +
-        `EMA50     : ${fmtNum(r.ema50)}\n` +
-        `MACD      : ${fmtNum(r.macdHist)}\n` +
-        `VOL/AVG20 : ${fmtNum(r.volRatio)}\n` +
-        `ATR14     : ${fmtPct(r.atrPct)}\n` +
-        `HIGH20    : ${fmtNum(r.high20, 0)}\n` +
-        `RSR20/60  : ${fmtInt(r.rsr20)} / ${fmtInt(r.rsr60)}\n` +
-        `CANDLE    : ${r.candle || "-"}\n` +
-        `TREND     : ${r.trend || "-"}\n` +
+        `🟢 EAS      : ${fmtInt(r.earlyAccumulationScore)}/100 | ${cleanText(r.earlyAccumulationLabel)}\n` +
+        `Vol        : ${cleanText(r.volatility)}\n` +
+        `Akum 1D    : ${cleanText(r.accumulation)} | Avg 1D  : ${fmtNum(r.accumulationAvg1d)}\n` +
+        `Akum 5D    : ${cleanText(r.accumulation5d)} | Avg 5D  : ${fmtNum(r.accumulationAvg5d)}\n` +
+        `Akum 10D   : ${cleanText(r.accumulation10d)} | Avg 10D: ${fmtNum(r.accumulationAvg10d)}\n` +
+        `Close      : ${fmtNum(r.close, 0)} | Chg : ${fmtPct(r.changePct)}\n` +
+        `RSI14      : ${fmtNum(r.rsi14)}\n` +
+        `EMA20      : ${fmtNum(r.ema20)}\n` +
+        `EMA50      : ${fmtNum(r.ema50)}\n` +
+        `MACD       : ${fmtNum(r.macdHist)}\n` +
+        `VOL/AVG20  : ${fmtNum(r.volRatio)}\n` +
+        `ATR14      : ${fmtPct(r.atrPct)}\n` +
+        `HIGH20     : ${fmtNum(r.high20, 0)}\n` +
+        `RSR20/60   : ${fmtInt(r.rsr20)} / ${fmtInt(r.rsr60)}\n` +
+        `CANDLE     : ${r.candle || "-"}\n` +
+        `TREND      : ${r.trend || "-"}\n` +
+        `EAS REASON : ${cleanText(r.earlyAccumulationReason)}\n` +
         "━━━━━━━━━━━━━━━━━━━━\n";
     });
   }

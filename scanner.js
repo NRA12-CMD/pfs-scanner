@@ -621,7 +621,6 @@ if (
 }
 
   return {
-   return {
   score,
   signal,
   entryPrice,

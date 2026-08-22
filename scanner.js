@@ -1,5 +1,5 @@
-// PFS Scanner V67.4 HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
-// PFS Scanner V67.4 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
+// PFS Scanner V67.5 HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V67.5 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
 // Core screening logic preserved; Google Sheets UI/SpreadsheetApp features are removed.
@@ -68,7 +68,7 @@ const CFG = {
   // V66 HIGH WINRATE PROFILE
   // Tujuan: menaikkan kualitas sinyal hijau (Close > -1%) dengan filter berlapis.
   // Tidak menjamin WR 90%; angka 90% harus dibuktikan oleh backtest out-of-sample.
-  HIGH_WINRATE_MIN_PFS: 85,
+  HIGH_WINRATE_MIN_PFS: 62,
   HIGH_WINRATE_MIN_EAS: 75,
   HIGH_WINRATE_MIN_TREND: 80,
   HIGH_WINRATE_MIN_TIMING: 75,
@@ -1903,7 +1903,7 @@ async function main() {
   const symbols = await loadSymbols();
   if (!symbols.length) throw new Error("Tidak ada saham di symbols.json.");
 
-  console.log(`PFS Scanner V67.4 HIGH WINRATE + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
+  console.log(`PFS Scanner V67.5 HIGH WINRATE + PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
   console.log(`History     : ${CFG.LOOKBACK_DAYS} trading candles (Yahoo window auto-expanded)`);
   console.log(`Universe    : ${symbols.length} saham`);
@@ -2025,7 +2025,7 @@ async function main() {
     }
   }
 
-  // V67.4 HIGH WINRATE: hanya saham yang lolos SELURUH filter HIGH WINRATE + OHLC yang boleh keluar.
+  // V67.5 HIGH WINRATE: hanya saham yang lolos SELURUH filter HIGH WINRATE + OHLC yang boleh keluar.
   // Saham yang gagal satu saja tidak dimasukkan ke screening Telegram/CSV/JSON.
   const rejectedByStrictFilter = results.filter((r) => !r.highWinratePass).length;
 
@@ -2092,7 +2092,7 @@ async function main() {
   };
 
   let telegramSummary =
-    "📊 PFS SCREENING IDX - V67.4 HIGH WINRATE\n" +
+    "📊 PFS SCREENING IDX - V67.5 HIGH WINRATE\n" +
     `Total LOLOS : ${qualified.length}\n` +
     `HIGH WINRATE : PFS>=${CFG.HIGH_WINRATE_MIN_PFS} | EAS>=${CFG.HIGH_WINRATE_MIN_EAS} | Trend>=${CFG.HIGH_WINRATE_MIN_TREND} | Timing>=${CFG.HIGH_WINRATE_MIN_TIMING} | Entry>=${CFG.HIGH_WINRATE_MIN_ENTRY}\n` +
     `RSR20>=${CFG.HIGH_WINRATE_MIN_RSR20} | Vol/Avg20>=${CFG.HIGH_WINRATE_MIN_VOL_RATIO} | Accum>=${CFG.HIGH_WINRATE_MIN_ACCUMULATION} | RSI 52-68 | MACD>0\n` +

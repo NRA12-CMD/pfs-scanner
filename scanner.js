@@ -7,7 +7,7 @@
 // Default:
 // - Market: IDX
 // - Timeframe: Daily 1D
-// - Lookback: 500 calendar days
+// - Lookback: 100 trading candles (fetch window expanded to calendar days automatically)
 // - Base Minimum PFS: 62
 // - STRICT qualification: PFS + EAS + Timing + Trend + Entry Score + UPTREND
 // - Maximum displayed results: 50
@@ -51,6 +51,9 @@ async function sendTelegram(message) {
 const CFG = {
   LOOKBACK_DAYS: 100,
   MIN_BARS: 80,
+  // Yahoo period1/period2 uses calendar days; expand enough to obtain ~100 trading candles.
+  CALENDAR_DAYS_MULTIPLIER: 1.70,
+  MIN_CALENDAR_DAYS: 180,
   MIN_SCORE: 62,
 
   // STRICT ENTRY FILTERS
@@ -863,8 +866,17 @@ function parseYahooHistoryBody(json, symbol) {
 
 async function fetchYahooHistory(symbol, lookbackDays = CFG.LOOKBACK_DAYS) {
   const end = Math.floor(Date.now() / 1000);
+
+  // LOOKBACK_DAYS = target trading candles, not raw calendar days.
+  // Yahoo returns trading sessions only, so 100 calendar days produced only ~65 bars.
+  // Expand the Yahoo request window so IDX normally returns >= 80 bars.
+  const calendarDays = Math.max(
+    CFG.MIN_CALENDAR_DAYS,
+    Math.ceil(lookbackDays * CFG.CALENDAR_DAYS_MULTIPLIER)
+  );
+
   const start = Math.floor(
-    (Date.now() - lookbackDays * 24 * 60 * 60 * 1000) / 1000
+    (Date.now() - calendarDays * 24 * 60 * 60 * 1000) / 1000
   );
 
   const url =
@@ -1363,6 +1375,7 @@ async function main() {
 
   console.log(`PFS Scanner V62 STRICT PFS + EAS + TIMING + TREND + ENTRY Node.js`);
   console.log(`PFS minimum : ${CFG.MIN_SCORE}`);
+  console.log(`History     : ${CFG.LOOKBACK_DAYS} trading candles (Yahoo window auto-expanded)`);
   console.log(`Universe    : ${symbols.length} saham`);
   console.log(`Max output  : ${CFG.MAX_RESULTS}`);
 

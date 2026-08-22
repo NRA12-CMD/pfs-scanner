@@ -650,22 +650,7 @@ if (
   trend,
   reason: reasons.join(" | ")
 };
-    score, signal, rsi, ema50,
-    prevClose: prev?.close ?? null,
-    changePct: dailyChangePct,
-    volRatio, atrPct,
-    atrScore: volatility10Score,
-    volatility10Pct, volatility10Score, volatility10Label,
-    trendQuality,
-    accumulation, accumulationScore,
-    accumulation5d: accumulation5d.label,
-    accumulation5dScore: accumulation5d.score,
-    accumulation10d: accumulation10d.label,
-    accumulation10dScore: accumulation10d.score,
-    high20, distHigh,
-    candle, trend,
-    reason: reasons.join(" | "),
-  };
+   
 }
 
 function parseYahooHistoryBody(json, symbol) {

@@ -1231,20 +1231,120 @@ async function quickChartPNG(config, width = 1600, height = 720) {
 }
 
 function metricsPanelSVG(ticker, metrics) {
-  const esc = (v) => String(v ?? "-").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const num = (v, d=2) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "-";
+  const esc = (v) => String(v ?? "-")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  const num = (v, d=2) => Number.isFinite(Number(v)) ? Number(v).toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d}) : "-";
+  const integer = (v) => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString("en-US") : "-";
   const pct = (v) => Number.isFinite(Number(v)) ? `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(2)}%` : "-";
-  const lines = [
-    `${ticker}  |  PFS ${num(metrics.pfs,0)}/100  |  ${esc(metrics.entryDecision)}  | Grade ${esc(metrics.entryGrade)}`,
-    `ENTRY ${num(metrics.entryScore,0)}/100   |   TIMING ${num(metrics.timing,0)}/100   |   TREND ${num(metrics.trend,0)}/100   |   EAS ${num(metrics.eas,0)}/100`,
-    `RSR20 ${num(metrics.rsr20,0)} / RSR60 ${num(metrics.rsr60,0)}   |   RSI14 ${num(metrics.rsi14)}   |   Williams %R14 ${num(metrics.williamsR14)}   |   OBV ${num(metrics.obv,0)}`,
-    `Close ${num(metrics.close,0)}   |   Change ${pct(metrics.changePct)}   |   EMA20 ${num(metrics.ema20)}   |   EMA50 ${num(metrics.ema50)}`,
-    `Akum 1D ${esc(metrics.accumulation)} | Avg ${num(metrics.accumulationAvg1d)}   |   5D ${esc(metrics.accumulation5d)} | Avg ${num(metrics.accumulationAvg5d)}   |   10D ${esc(metrics.accumulation10d)} | Avg ${num(metrics.accumulationAvg10d)}`,
-    `VOL/AVG20 ${num(metrics.volRatio)}   |   ATR14 ${pct(metrics.atrPct)}   |   Volatilitas ${esc(metrics.volatility)}   |   Candle ${esc(metrics.candle)}   |   Trend ${esc(metrics.trend)}`,
-    `EAS: ${esc(metrics.earlyAccumulationReason || metrics.reason || "-")}`,
-    `Data ${esc(metrics.dataDate)}  |  30 CANDLE + EMA20/50 + PC10 + RSI14 + OBV + WILLIAMS %R14 + VOLUME`
+
+  // V66.7: warna filter dibuat berdasarkan kekuatan filter.
+  // HIJAU = KUAT, KUNING = SEDANG, MERAH = LEMAH.
+  const bandScore = (value, strong, medium) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return { bg:"#f3f4f6", border:"#d1d5db", fg:"#6b7280" };
+    if (n >= strong) return { bg:"#dcfce7", border:"#86efac", fg:"#166534" };
+    if (n >= medium) return { bg:"#fef9c3", border:"#fde047", fg:"#854d0e" };
+    return { bg:"#fee2e2", border:"#fca5a5", fg:"#991b1b" };
+  };
+
+  const bandLabel = (value) => {
+    const v = String(value ?? "").toUpperCase();
+    if (!v) return { bg:"#f3f4f6", border:"#d1d5db", fg:"#6b7280" };
+    if (/(KUAT|TOP|A\+|\bA\b|EARLY ACCUMULATION|UPTREND|BULLISH|POSITIF|SEHAT)/.test(v))
+      return { bg:"#dcfce7", border:"#86efac", fg:"#166534" };
+    if (/(SEDANG|CUKUP|MIXED|MULAI|AKUMULASI AWAL|WATCHLIST|CICIL|GRADE B|NETRAL)/.test(v))
+      return { bg:"#fef9c3", border:"#fde047", fg:"#854d0e" };
+    return { bg:"#fee2e2", border:"#fca5a5", fg:"#991b1b" };
+  };
+
+  const bandChange = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return bandLabel(v);
+    if (n > 0.5) return { bg:"#dcfce7", border:"#86efac", fg:"#166534" };
+    if (n >= -0.5) return { bg:"#fef9c3", border:"#fde047", fg:"#854d0e" };
+    return { bg:"#fee2e2", border:"#fca5a5", fg:"#991b1b" };
+  };
+
+  const bandRSI = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return bandLabel(v);
+    if (n >= 50 && n <= 70) return { bg:"#dcfce7", border:"#86efac", fg:"#166534" };
+    if ((n >= 45 && n < 50) || (n > 70 && n <= 75)) return { bg:"#fef9c3", border:"#fde047", fg:"#854d0e" };
+    return { bg:"#fee2e2", border:"#fca5a5", fg:"#991b1b" };
+  };
+
+  const bandMACD = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return bandLabel(v);
+    if (n > 0) return { bg:"#dcfce7", border:"#86efac", fg:"#166534" };
+    if (n >= -0.01) return { bg:"#fef9c3", border:"#fde047", fg:"#854d0e" };
+    return { bg:"#fee2e2", border:"#fca5a5", fg:"#991b1b" };
+  };
+
+  const bandVolRatio = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return bandLabel(v);
+    if (n >= 1.2) return { bg:"#dcfce7", border:"#86efac", fg:"#166534" };
+    if (n >= 1.0) return { bg:"#fef9c3", border:"#fde047", fg:"#854d0e" };
+    return { bg:"#fee2e2", border:"#fca5a5", fg:"#991b1b" };
+  };
+
+  const scoreLabel = (n, strong, medium) => {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return "-";
+    if (v >= strong) return "KUAT";
+    if (v >= medium) return "SEDANG";
+    return "LEMAH";
+  };
+
+  const cards = [
+    ["PFS", `${integer(metrics.pfs)}/100`, scoreLabel(metrics.pfs,85,75), bandScore(metrics.pfs,85,75)],
+    ["ENTRY", `${integer(metrics.entryScore)}/100`, `${esc(metrics.entryGrade || "-")} · ${esc(metrics.entryDecision || "-")}`, bandScore(metrics.entryScore,85,70)],
+    ["EAS", `${integer(metrics.eas)}/100`, scoreLabel(metrics.eas,75,55), bandScore(metrics.eas,75,55)],
+    ["TIMING", `${integer(metrics.timing)}/100`, scoreLabel(metrics.timing,75,55), bandScore(metrics.timing,75,55)],
+    ["TREND", `${integer(metrics.trend)}/100`, esc(metrics.trendQuality || scoreLabel(metrics.trend,80,60)), bandScore(metrics.trend,80,60)],
+    ["RSR20 / 60", `${integer(metrics.rsr20)} / ${integer(metrics.rsr60)}`, Number(metrics.rsr20)>=70 ? "KUAT" : Number(metrics.rsr20)>=60 ? "SEDANG" : "LEMAH", bandScore(metrics.rsr20,70,60)],
+    ["AKUMULASI 1D", esc(metrics.accumulation), `Score ${integer(metrics.accumulationScore)}`, bandScore(metrics.accumulationScore,75,55)],
+    ["AKUMULASI 5D", esc(metrics.accumulation5d), `Score ${integer(metrics.accumulation5dScore)}`, bandScore(metrics.accumulation5dScore,75,55)],
+    ["AKUMULASI 10D", esc(metrics.accumulation10d), `Score ${integer(metrics.accumulation10dScore)}`, bandScore(metrics.accumulation10dScore,75,55)],
+    ["VOLATILITAS", esc(metrics.volatility), `${num(metrics.atrPct)}% ATR14`, bandLabel(metrics.volatility)],
+    ["RSI14", num(metrics.rsi14), Number(metrics.rsi14)>=50 && Number(metrics.rsi14)<=70 ? "SEHAT" : Number(metrics.rsi14)>=45 ? "SEDANG" : "LEMAH", bandRSI(metrics.rsi14)],
+    ["MACD", num(metrics.macdHist), Number(metrics.macdHist)>0 ? "POSITIF" : Number(metrics.macdHist)>=-0.01 ? "NETRAL" : "NEGATIF", bandMACD(metrics.macdHist)],
+    ["VOL / AVG20", num(metrics.volRatio), Number(metrics.volRatio)>=1.2 ? "KUAT" : Number(metrics.volRatio)>=1 ? "SEDANG" : "LEMAH", bandVolRatio(metrics.volRatio)],
+    ["CANDLE", esc(metrics.candle), "KONDISI", bandLabel(metrics.candle)],
+    ["PERUBAHAN", pct(metrics.changePct), Number(metrics.changePct)>0.5 ? "KUAT" : Number(metrics.changePct)>=-0.5 ? "SEDANG" : "LEMAH", bandChange(metrics.changePct)],
+    ["TREND", esc(metrics.trend || metrics.trendQuality), "STATUS", bandLabel(metrics.trend || metrics.trendQuality)]
   ];
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520"><rect width="1600" height="520" fill="white"/><text x="45" y="55" font-family="Arial" font-size="30" font-weight="700" fill="#111827">PFS REALTIME DASHBOARD</text>${lines.map((t,i)=>`<text x="45" y="${105+i*50}" font-family="Arial" font-size="22" fill="#111827">${t}</text>`).join("")}</svg>`;
+
+  const W = 1600, H = 520;
+  const margin = 28, gap = 12, cols = 4;
+  const cardW = (W - margin*2 - gap*(cols-1)) / cols;
+  const cardH = 88;
+  const startY = 72;
+
+  const cardSVG = (item, i) => {
+    const row = Math.floor(i / cols), col = i % cols;
+    const x = margin + col * (cardW + gap);
+    const y = startY + row * (cardH + gap);
+    const [title, value, sub, c] = item;
+    return `<rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="${c.bg}" stroke="${c.border}" stroke-width="2"/>
+      <text x="${x+16}" y="${y+23}" font-family="Arial" font-size="16" font-weight="700" fill="#374151">${title}</text>
+      <text x="${x+16}" y="${y+53}" font-family="Arial" font-size="25" font-weight="700" fill="${c.fg}">${value}</text>
+      <text x="${x+cardW-16}" y="${y+53}" text-anchor="end" font-family="Arial" font-size="15" font-weight="700" fill="${c.fg}">${sub}</text>`;
+  };
+
+  const legendY = 438;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <rect width="${W}" height="${H}" fill="#ffffff"/>
+    <text x="${margin}" y="38" font-family="Arial" font-size="25" font-weight="700" fill="#111827">${esc(ticker)} — PANEL FILTER</text>
+    <text x="${W-margin}" y="38" text-anchor="end" font-family="Arial" font-size="16" fill="#6b7280">Data ${esc(metrics.dataDate || "-")}</text>
+    ${cards.map(cardSVG).join("")}
+    <circle cx="${margin+8}" cy="${legendY}" r="7" fill="#22c55e"/><text x="${margin+22}" y="${legendY+6}" font-family="Arial" font-size="15" fill="#166534" font-weight="700">KUAT</text>
+    <circle cx="${margin+100}" cy="${legendY}" r="7" fill="#eab308"/><text x="${margin+114}" y="${legendY+6}" font-family="Arial" font-size="15" fill="#854d0e" font-weight="700">SEDANG</text>
+    <circle cx="${margin+210}" cy="${legendY}" r="7" fill="#ef4444"/><text x="${margin+224}" y="${legendY+6}" font-family="Arial" font-size="15" fill="#991b1b" font-weight="700">LEMAH</text>
+    <text x="${W-margin}" y="${legendY+6}" text-anchor="end" font-family="Arial" font-size="14" fill="#6b7280">EMA20 ${num(metrics.ema20)} · EMA50 ${num(metrics.ema50)} · PC10 · RSI14 · OBV · W%R14 · Volume</text>
+  </svg>`;
 }
 
 async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
@@ -2461,7 +2561,9 @@ async function main() {
         accumulationAvg1d: r.accumulationAvg1d, accumulationAvg5d: r.accumulationAvg5d, accumulationAvg10d: r.accumulationAvg10d,
         close: r.close, changePct: r.changePct, dataDate: r.dataDate, trendQuality: r.trendQuality,
         volatility: r.volatility, candle: r.candle, reason: r.reason,
-        williamsR14: r.williamsR14, obv: r.obv
+        ema20: r.ema20, ema50: r.ema50, macdHist: r.macdHist,
+        accumulationScore: r.accumulationScore, accumulation5dScore: r.accumulation5dScore, accumulation10dScore: r.accumulation10dScore,
+        trend: r.trend, williamsR14: r.williamsR14, obv: r.obv
       });
       const pngFile = `output/charts/${safeTicker}_REALTIME.png`;
       await fs.writeFile(pngFile, r.telegramChartPng);

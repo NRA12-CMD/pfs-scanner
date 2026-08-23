@@ -1,4 +1,4 @@
-// PFS Scanner V66.5 TELEGRAM DASHBOARD CHART - FIX PHOTO SEND - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V66.6 TELEGRAM DASHBOARD CHART - FIX PHOTO SEND - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -1118,59 +1118,156 @@ ${cards}
 </svg>`;
 }
 
-async function convertSvgToPng(svg, pngFile) {
-  const svgFile = `${pngFile}.tmp.svg`;
-  await fs.writeFile(svgFile, svg, "utf8");
-
-  // 1) Pakai renderer sistem jika tersedia.
-  const attempts = [
-    ["rsvg-convert", ["-w", "1600", "-o", pngFile, svgFile]],
-    ["magick", ["-background", "white", svgFile, pngFile]],
-    ["convert", ["-background", "white", svgFile, pngFile]],
-  ];
-  for (const [cmd, args] of attempts) {
-    try {
-      await execFileAsync(cmd, args);
-      const stat = await fs.stat(pngFile);
-      if (stat.size > 1000) {
-        await fs.unlink(svgFile).catch(() => {});
-        return pngFile;
-      }
-    } catch (_) {}
-  }
-
-  // 2) GitHub Actions/node: pastikan sharp tersedia.
-  // Versi V66.4 gagal diam-diam jika sharp belum ter-install; akibatnya
-  // screening teks tetap terkirim tetapi foto tidak pernah masuk Telegram.
+async function ensureSharp() {
   try {
-    let sharp;
-    try {
-      sharp = await import("sharp");
-    } catch (_) {
-      console.log("sharp belum tersedia. Menginstall sharp otomatis...");
-      await execFileAsync(process.platform === "win32" ? "npm.cmd" : "npm", [
-        "install", "--no-save", "--no-package-lock", "sharp"
-      ], { timeout: 180000 });
-      sharp = await import("sharp");
-    }
-    await sharp.default(Buffer.from(svg)).png({ compressionLevel: 6 }).toFile(pngFile);
-    const stat = await fs.stat(pngFile);
-    if (stat.size <= 1000) throw new Error("PNG hasil render terlalu kecil.");
-    await fs.unlink(svgFile).catch(() => {});
-    return pngFile;
-  } catch (error) {
-    await fs.unlink(svgFile).catch(() => {});
-    throw new Error(`Render PNG gagal: ${error.message}`);
+    return (await import("sharp")).default;
+  } catch (_) {
+    console.log("sharp belum tersedia. Menginstall sharp otomatis...");
+    await execFileAsync(process.platform === "win32" ? "npm.cmd" : "npm", [
+      "install", "--no-save", "--no-package-lock", "sharp"
+    ], { timeout: 180000 });
+    return (await import("sharp")).default;
   }
 }
 
+function qcSafeNumber(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function quickChartMainConfig(ticker, chartData) {
+  const labels = chartData.map((_, i) => String(i + 1));
+  const candles = chartData.map((d, i) => ({
+    x: i + 1,
+    o: qcSafeNumber(d.open), h: qcSafeNumber(d.high),
+    l: qcSafeNumber(d.low), c: qcSafeNumber(d.close)
+  }));
+  const line = (label, field, borderColor, dash = []) => ({
+    type: "line", label, data: chartData.map((d, i) => ({ x: i + 1, y: qcSafeNumber(d[field], null) })),
+    borderColor, borderWidth: 2, pointRadius: 0, fill: false, tension: 0.15,
+    borderDash: dash
+  });
+  return {
+    type: "candlestick",
+    data: { labels, datasets: [
+      { label: "Harga", data: candles, borderColor: "#222", color: { up: "#16a34a", down: "#dc2626", unchanged: "#64748b" } },
+      line("EMA20", "ema20", "#2563eb"),
+      line("EMA50", "ema50", "#f59e0b"),
+      line("PC10 HIGH", "priceChannelHigh10", "#7c3aed", [5, 4]),
+      line("PC10 LOW", "priceChannelLow10", "#7c3aed", [5, 4])
+    ]},
+    options: {
+      responsive: false,
+      animation: false,
+      plugins: {
+        legend: { display: true, position: "top", labels: { font: { size: 18 } } },
+        title: { display: true, text: `${ticker} | 30 CANDLE | EMA20/50 | PRICE CHANNEL 10`, font: { size: 28, weight: "bold" } }
+      },
+      scales: {
+        x: { type: "linear", min: 1, max: 30, ticks: { stepSize: 1, font: { size: 12 } }, grid: { display: false } },
+        y: { position: "left", ticks: { font: { size: 14 } } }
+      }
+    }
+  };
+}
+
+function quickChartOscConfig(ticker, chartData) {
+  const labels = chartData.map((_, i) => String(i + 1));
+  return {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "RSI14", data: chartData.map(d => qcSafeNumber(d.rsi14, null)), borderColor: "#2563eb", borderWidth: 3, pointRadius: 0, tension: 0.15 },
+      { label: "Williams %R14", data: chartData.map(d => qcSafeNumber(d.williamsR14, null)), borderColor: "#9333ea", borderWidth: 3, pointRadius: 0, tension: 0.15 },
+      { label: "RSI 70", data: chartData.map(() => 70), borderColor: "#dc2626", borderDash: [6,4], pointRadius: 0, borderWidth: 1 },
+      { label: "RSI 30", data: chartData.map(() => 30), borderColor: "#16a34a", borderDash: [6,4], pointRadius: 0, borderWidth: 1 },
+      { label: "W%R -20", data: chartData.map(() => -20), borderColor: "#dc2626", borderDash: [4,4], pointRadius: 0, borderWidth: 1 },
+      { label: "W%R -80", data: chartData.map(() => -80), borderColor: "#16a34a", borderDash: [4,4], pointRadius: 0, borderWidth: 1 }
+    ]},
+    options: {
+      responsive: false, animation: false,
+      plugins: { legend: { position: "top", labels: { font: { size: 16 } } }, title: { display: true, text: `${ticker} | RSI14 + WILLIAMS %R14`, font: { size: 24, weight: "bold" } } },
+      scales: { x: { ticks: { font: { size: 12 } } }, y: { min: -100, max: 100, ticks: { font: { size: 14 } } } }
+    }
+  };
+}
+
+function quickChartVolumeObvConfig(ticker, chartData) {
+  const labels = chartData.map((_, i) => String(i + 1));
+  return {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "OBV", data: chartData.map(d => qcSafeNumber(d.obv, null)), borderColor: "#0891b2", borderWidth: 3, pointRadius: 0, tension: 0.15, yAxisID: "yObv" },
+      { label: "Volume", data: chartData.map(d => qcSafeNumber(d.volume, null)), type: "bar", backgroundColor: "rgba(100,116,139,0.35)", borderColor: "rgba(100,116,139,0.5)", yAxisID: "yVol" }
+    ]},
+    options: {
+      responsive: false, animation: false,
+      plugins: { legend: { position: "top", labels: { font: { size: 16 } } }, title: { display: true, text: `${ticker} | OBV + VOLUME`, font: { size: 24, weight: "bold" } } },
+      scales: {
+        x: { ticks: { font: { size: 12 } } },
+        yObv: { position: "left", ticks: { font: { size: 14 } } },
+        yVol: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { font: { size: 14 } } }
+      }
+    }
+  };
+}
+
+async function quickChartPNG(config, width = 1600, height = 720) {
+  const response = await fetch("https://quickchart.io/chart", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      version: "4",
+      width, height, devicePixelRatio: 1,
+      format: "png", backgroundColor: "white", chart: config
+    })
+  });
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!response.ok || buffer.length < 1000) {
+    let detail = "";
+    try { detail = buffer.toString("utf8").slice(0, 500); } catch (_) {}
+    throw new Error(`QuickChart HTTP ${response.status}: ${detail}`);
+  }
+  return buffer;
+}
+
+function metricsPanelSVG(ticker, metrics) {
+  const esc = (v) => String(v ?? "-").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const num = (v, d=2) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "-";
+  const pct = (v) => Number.isFinite(Number(v)) ? `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(2)}%` : "-";
+  const lines = [
+    `${ticker}  |  PFS ${num(metrics.pfs,0)}/100  |  ${esc(metrics.entryDecision)}  | Grade ${esc(metrics.entryGrade)}`,
+    `ENTRY ${num(metrics.entryScore,0)}/100   |   TIMING ${num(metrics.timing,0)}/100   |   TREND ${num(metrics.trend,0)}/100   |   EAS ${num(metrics.eas,0)}/100`,
+    `RSR20 ${num(metrics.rsr20,0)} / RSR60 ${num(metrics.rsr60,0)}   |   RSI14 ${num(metrics.rsi14)}   |   Williams %R14 ${num(metrics.williamsR14)}   |   OBV ${num(metrics.obv,0)}`,
+    `Close ${num(metrics.close,0)}   |   Change ${pct(metrics.changePct)}   |   EMA20 ${num(metrics.ema20)}   |   EMA50 ${num(metrics.ema50)}`,
+    `Akum 1D ${esc(metrics.accumulation)} | Avg ${num(metrics.accumulationAvg1d)}   |   5D ${esc(metrics.accumulation5d)} | Avg ${num(metrics.accumulationAvg5d)}   |   10D ${esc(metrics.accumulation10d)} | Avg ${num(metrics.accumulationAvg10d)}`,
+    `VOL/AVG20 ${num(metrics.volRatio)}   |   ATR14 ${pct(metrics.atrPct)}   |   Volatilitas ${esc(metrics.volatility)}   |   Candle ${esc(metrics.candle)}   |   Trend ${esc(metrics.trend)}`,
+    `EAS: ${esc(metrics.earlyAccumulationReason || metrics.reason || "-")}`,
+    `Data ${esc(metrics.dataDate)}  |  30 CANDLE + EMA20/50 + PC10 + RSI14 + OBV + WILLIAMS %R14 + VOLUME`
+  ];
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520"><rect width="1600" height="520" fill="white"/><text x="45" y="55" font-family="Arial" font-size="30" font-weight="700" fill="#111827">PFS REALTIME DASHBOARD</text>${lines.map((t,i)=>`<text x="45" y="${105+i*50}" font-family="Arial" font-size="22" fill="#111827">${t}</text>`).join("")}</svg>`;
+}
+
 async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
-  if (!Array.isArray(chartData) || !chartData.length) return null;
-  const svg = makeStockChartSVG(ticker, chartData, metrics);
+  if (!Array.isArray(chartData) || chartData.length < 5) return null;
+  const sharp = await ensureSharp();
+  const main = await quickChartPNG(quickChartMainConfig(ticker, chartData), 1600, 760);
+  const osc = await quickChartPNG(quickChartOscConfig(ticker, chartData), 1600, 470);
+  const vol = await quickChartPNG(quickChartVolumeObvConfig(ticker, chartData), 1600, 470);
+  const panel = await sharp(Buffer.from(metricsPanelSVG(ticker, metrics))).png().toBuffer();
+  const final = await sharp({ create: { width: 1600, height: 2220, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } })
+    .composite([
+      { input: main, top: 0, left: 0 },
+      { input: osc, top: 760, left: 0 },
+      { input: vol, top: 1230, left: 0 },
+      { input: panel, top: 1700, left: 0 }
+    ])
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+  if (final.length < 1000) throw new Error("PNG dashboard hasil QuickChart kosong.");
   const safe = String(ticker).replace(/[^A-Za-z0-9_-]/g, "_");
   const pngFile = `output/charts/${safe}_TELEGRAM.png`;
-  await convertSvgToPng(svg, pngFile);
-  return await fs.readFile(pngFile);
+  await fs.writeFile(pngFile, final);
+  return final;
 }
 
 async function sendTelegramPhoto(chatId, imageBuffer, caption = '') {
@@ -2345,7 +2442,7 @@ async function main() {
     r.rank = i + 1;
   });
 
-  // V66.5 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
+  // V66.6 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
   // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
   // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });

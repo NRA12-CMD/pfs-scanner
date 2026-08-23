@@ -1,4 +1,4 @@
-// PFS Scanner V66.4 TELEGRAM DASHBOARD CHART - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V66.5 TELEGRAM DASHBOARD CHART - FIX PHOTO SEND - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -921,7 +921,7 @@ function svgEsc(v) {
 
 function makeStockChartSVG(ticker, chartData, metrics = {}) {
   if (!chartData?.length) return "";
-  const W = 1600, H = 1700;
+  const W = 1600, H = 2200;
   const left = 90, right = 45, top = 95, gap = 18;
   const plotW = W - left - right;
   const n = chartData.length;
@@ -1114,13 +1114,15 @@ ${labels}
 
 ${scoreCard}${scoreRow}
 ${cards}
-<text x="${left}" y="${H-15}" font-size="15" font-family="Arial" fill="#64748b">Data diambil saat screening • 30 candle • EMA20/EMA50 • Price Channel 10 • RSI14 • OBV • Williams %R 14 • Volume</text>
+<text x="${left}" y="${H-15}" font-size="15" font-family="Arial" fill="#64748b">Data diambil saat screening • 30 candle • EMA20 • EMA50 • Price Channel 10 • RSI14 • OBV • Williams %R 14 • Volume</text>
 </svg>`;
 }
 
 async function convertSvgToPng(svg, pngFile) {
   const svgFile = `${pngFile}.tmp.svg`;
   await fs.writeFile(svgFile, svg, "utf8");
+
+  // 1) Pakai renderer sistem jika tersedia.
   const attempts = [
     ["rsvg-convert", ["-w", "1600", "-o", pngFile, svgFile]],
     ["magick", ["-background", "white", svgFile, pngFile]],
@@ -1131,19 +1133,34 @@ async function convertSvgToPng(svg, pngFile) {
       await execFileAsync(cmd, args);
       const stat = await fs.stat(pngFile);
       if (stat.size > 1000) {
-        await fs.unlink(svgFile).catch(()=>{});
+        await fs.unlink(svgFile).catch(() => {});
         return pngFile;
       }
     } catch (_) {}
   }
+
+  // 2) GitHub Actions/node: pastikan sharp tersedia.
+  // Versi V66.4 gagal diam-diam jika sharp belum ter-install; akibatnya
+  // screening teks tetap terkirim tetapi foto tidak pernah masuk Telegram.
   try {
-    const sharp = await import("sharp");
-    await sharp.default(Buffer.from(svg)).png().toFile(pngFile);
-    await fs.unlink(svgFile).catch(()=>{});
+    let sharp;
+    try {
+      sharp = await import("sharp");
+    } catch (_) {
+      console.log("sharp belum tersedia. Menginstall sharp otomatis...");
+      await execFileAsync(process.platform === "win32" ? "npm.cmd" : "npm", [
+        "install", "--no-save", "--no-package-lock", "sharp"
+      ], { timeout: 180000 });
+      sharp = await import("sharp");
+    }
+    await sharp.default(Buffer.from(svg)).png({ compressionLevel: 6 }).toFile(pngFile);
+    const stat = await fs.stat(pngFile);
+    if (stat.size <= 1000) throw new Error("PNG hasil render terlalu kecil.");
+    await fs.unlink(svgFile).catch(() => {});
     return pngFile;
-  } catch (_) {
-    await fs.unlink(svgFile).catch(()=>{});
-    throw new Error("Tidak ada renderer PNG. Install rsvg-convert/ImageMagick atau npm install sharp.");
+  } catch (error) {
+    await fs.unlink(svgFile).catch(() => {});
+    throw new Error(`Render PNG gagal: ${error.message}`);
   }
 }
 
@@ -1158,14 +1175,30 @@ async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
 
 async function sendTelegramPhoto(chatId, imageBuffer, caption = '') {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token || !chatId || !imageBuffer) return;
+  if (!token || !chatId) throw new Error("TELEGRAM_BOT_TOKEN/CHAT_ID belum diatur");
+  if (!imageBuffer || !Buffer.isBuffer(imageBuffer) || imageBuffer.length < 1000) {
+    throw new Error("Buffer PNG chart tidak valid atau kosong");
+  }
+  if (imageBuffer.length > 9_500_000) {
+    throw new Error(`PNG chart terlalu besar: ${(imageBuffer.length / 1048576).toFixed(2)} MB`);
+  }
+
   const form = new FormData();
   form.append('chat_id', String(chatId));
   if (caption) form.append('caption', caption.slice(0, 1024));
-  form.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'pfs_chart.png');
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form });
-  const result = await response.json();
-  if (!result.ok) throw new Error(result.description || 'Telegram sendPhoto gagal');
+  form.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'PFS_REALTIME.png');
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+    method: 'POST',
+    body: form,
+  });
+  const raw = await response.text();
+  let result;
+  try { result = JSON.parse(raw); } catch (_) { throw new Error(`Telegram sendPhoto HTTP ${response.status}: ${raw.slice(0,200)}`); }
+  if (!response.ok || !result.ok) {
+    throw new Error(result.description || `Telegram sendPhoto HTTP ${response.status}`);
+  }
+  return result.result;
 }
 
 function telegramStockCaption(r) {
@@ -2312,7 +2345,7 @@ async function main() {
     r.rank = i + 1;
   });
 
-  // V66.4 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
+  // V66.5 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
   // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
   // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });
@@ -2450,32 +2483,44 @@ async function main() {
       "━━━━━━━━━━━━━━━━━━━━\n";
   }
 
-  const TELEGRAM_LIMIT = 3800;
-  for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
-    await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
-  }
-
-  // Kirim SATU CHART PER SAHAM LOLOS sebagai foto Telegram.
-  // Foto dibuat realtime dari data Yahoo yang baru saja dipakai screening.
+  // CHART MENJADI PESAN UTAMA: kirim 1 dashboard PNG per saham LOLOS.
+  // Teks ringkasan tetap dikirim setelah semua foto agar Telegram tidak hanya berisi teks.
+  let chartSent = 0;
   for (const r of qualified) {
-    if (!r.telegramChartPng) continue;
     try {
+      if (!r.telegramChartPng) {
+        throw new Error(r.telegramChartError || "PNG chart tidak berhasil dibuat");
+      }
       await sendTelegramPhoto(
         process.env.TELEGRAM_CHAT_ID,
         r.telegramChartPng,
         telegramStockCaption(r)
       );
+      chartSent++;
+      console.log(`CHART TELEGRAM TERKIRIM: ${r.ticker}`);
     } catch (photoError) {
       console.error(`Gagal kirim chart Telegram ${r.ticker}:`, photoError.message);
-      await sendTelegramTo(process.env.TELEGRAM_CHAT_ID, `⚠️ Chart ${r.ticker} gagal dikirim: ${photoError.message}`);
+      // Jangan diam: kirim error yang jelas supaya penyebab terlihat di Telegram.
+      await sendTelegramTo(
+        process.env.TELEGRAM_CHAT_ID,
+        `⚠️ CHART ${r.ticker} GAGAL DIKIRIM
+${photoError.message}`
+      );
     }
   }
+
+  // Ringkasan screening dikirim terakhir.
+  const TELEGRAM_LIMIT = 3800;
+  for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
+    await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
+  }
+  console.log(`TELEGRAM CHART: ${chartSent}/${qualified.length} berhasil dikirim sebagai FOTO`);
 
   console.log("");
   console.log(`Selesai. Dicek: ${symbols.length}`);
   console.log(`Berhasil: ${results.length}`);
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
-  console.log(`CHART: ${qualified.length} file SVG (30 candle + EMA20/50 + PC10 + RSI14 + MACD + Volume)`);
+  console.log(`CHART: ${qualified.length} dashboard PNG (30 candle + EMA20 + EMA50 + PC10 + RSI14 + OBV + Williams %R14 + Volume)`);
   console.log(`Error: ${errors.length}`);
   if (shouldRunBacktest && backtest) {
     console.log(`BACKTEST MERAH < -1%: ${backtest.criteria["MERAH: Close < -1%"].tp1WinRate.toFixed(1)}%`);

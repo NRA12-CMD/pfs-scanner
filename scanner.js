@@ -1,4 +1,4 @@
-// PFS Scanner V66.6 TELEGRAM DASHBOARD CHART - FIX PHOTO SEND - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V66.10 TELEGRAM DASHBOARD CHART - 50 CANDLE + MACD + ENTRY MODE - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -102,7 +102,7 @@ const CFG = {
 
   MAX_RESULTS: 50,
   DISPLAY_DAYS: 20,
-  CHART_CANDLES: 30,
+  CHART_CANDLES: 50,
   PRICE_CHANNEL_PERIOD: 10,
   VOLATILITY_TOP_ATR_PCT: 5.50,
   VOLATILITY_STRONG_ATR_PCT: 2.00,
@@ -911,6 +911,8 @@ function calculateChartData(stock, candles = CFG.CHART_CANDLES) {
       priceChannelLow10: pcLow,
       rsi14: Number(rsi14),
       williamsR14: Number(williamsR14),
+      macdLine: Number.isFinite(Number(macdLine)) ? Number(macdLine) : 0,
+      macdSignal: Number.isFinite(Number(macdSignalSeries[i])) ? Number(macdSignalSeries[i]) : 0,
       macdHist: Number.isFinite(Number(macdHist)) ? Number(macdHist) : 0,
       obv: Number(obvArr[i]) || 0,
     };
@@ -1084,7 +1086,7 @@ function makeStockChartSVG(ticker, chartData, metrics = {}) {
 O ${integer(last.open)}   H ${integer(last.high)}   L ${integer(last.low)}   C ${integer(last.close)}
 <tspan fill="${Number(last.close)>=Number(last.open)?"#15803d":"#dc2626"}">  ${pct(metrics.changePct)}</tspan>
 </text>
-<text x="${W-right}" y="82" text-anchor="end" font-size="18" font-family="Arial" font-weight="700" fill="#111827">30 CANDLE TERAKHIR</text>
+<text x="${W-right}" y="82" text-anchor="end" font-size="18" font-family="Arial" font-weight="700" fill="#111827">50 CANDLE TERAKHIR</text>
 
 ${grid(top,priceH)}
 ${candles}
@@ -1116,7 +1118,7 @@ ${labels}
 
 ${scoreCard}${scoreRow}
 ${cards}
-<text x="${left}" y="${H-15}" font-size="15" font-family="Arial" fill="#64748b">Data diambil saat screening • 30 candle • EMA20 • EMA50 • Price Channel 10 • RSI14 • OBV • Williams %R 14 • Volume</text>
+<text x="${left}" y="${H-15}" font-size="15" font-family="Arial" fill="#64748b">Data diambil saat screening • 50 candle • EMA20 • EMA50 • Price Channel 10 • RSI14 • OBV • Williams %R 14 • MACD • Volume</text>
 </svg>`;
 }
 
@@ -1163,7 +1165,7 @@ function quickChartMainConfig(ticker, chartData) {
       animation: false,
       plugins: {
         legend: { display: true, position: "top", labels: { font: { size: 18 } } },
-        title: { display: true, text: `${ticker} | 30 CANDLE | EMA20/50 | PRICE CHANNEL 10`, font: { size: 28, weight: "bold" } }
+        title: { display: true, text: `${ticker} | 50 CANDLE | EMA20/50 | PRICE CHANNEL 10`, font: { size: 28, weight: "bold" } }
       },
       scales: {
         x: { type: "linear", min: 1, max: 30, ticks: { stepSize: 1, font: { size: 12 } }, grid: { display: false } },
@@ -1208,6 +1210,30 @@ function quickChartVolumeObvConfig(ticker, chartData) {
         x: { ticks: { font: { size: 12 } } },
         yObv: { position: "left", ticks: { font: { size: 14 } } },
         yVol: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { font: { size: 14 } } }
+      }
+    }
+  };
+}
+
+
+function quickChartMACDConfig(ticker, chartData) {
+  const labels = chartData.map((d) => d.date || '');
+  const hist = chartData.map(d => qcSafeNumber(d.macdHist, null));
+  const macdLine = chartData.map(d => qcSafeNumber(d.macdLine, null));
+  const signalLine = chartData.map(d => qcSafeNumber(d.macdSignal, null));
+  return {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'MACD Histogram', data: hist, backgroundColor: hist.map(v => Number(v) >= 0 ? 'rgba(22,163,74,0.65)' : 'rgba(220,38,38,0.65)'), borderWidth: 0, order: 3 },
+      { label: 'MACD Line', data: macdLine, type: 'line', borderColor: '#2563eb', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.15, order: 1 },
+      { label: 'Signal 9', data: signalLine, type: 'line', borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.15, order: 2 }
+    ]},
+    options: {
+      responsive: false, animation: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 16 } } }, title: { display: true, text: `${ticker} | MACD (12,26,9)`, font: { size: 24, weight: 'bold' } } },
+      scales: {
+        x: { ticks: { font: { size: 11 }, maxTicksLimit: 10 } },
+        y: { ticks: { font: { size: 14 } }, grid: { color: 'rgba(148,163,184,0.25)' } }
       }
     }
   };
@@ -1300,6 +1326,7 @@ function metricsPanelSVG(ticker, metrics) {
     return "LEMAH";
   };
 
+  const entryMode = metrics.entryMode || { label: "🟡 WAIT / CICIL", detail: "Tunggu konfirmasi", bg: "#fef9c3", border: "#eab308", fg: "#854d0e" };
   const cards = [
     ["PFS", `${integer(metrics.pfs)}/100`, scoreLabel(metrics.pfs,85,75), bandScore(metrics.pfs,85,75)],
     ["ENTRY", `${integer(metrics.entryScore)}/100`, `${esc(metrics.entryGrade || "-")} · ${esc(metrics.entryDecision || "-")}`, bandScore(metrics.entryScore,85,70)],
@@ -1316,10 +1343,11 @@ function metricsPanelSVG(ticker, metrics) {
     ["VOL / AVG20", num(metrics.volRatio), Number(metrics.volRatio)>=1.2 ? "KUAT" : Number(metrics.volRatio)>=1 ? "SEDANG" : "LEMAH", bandVolRatio(metrics.volRatio)],
     ["CANDLE", esc(metrics.candle), "KONDISI", bandLabel(metrics.candle)],
     ["PERUBAHAN", pct(metrics.changePct), Number(metrics.changePct)>0.5 ? "KUAT" : Number(metrics.changePct)>=-0.5 ? "SEDANG" : "LEMAH", bandChange(metrics.changePct)],
-    ["TREND", esc(metrics.trend || metrics.trendQuality), "STATUS", bandLabel(metrics.trend || metrics.trendQuality)]
+    ["TREND", esc(metrics.trend || metrics.trendQuality), "STATUS", bandLabel(metrics.trend || metrics.trendQuality)],
+    ["ENTRY MODE", esc(entryMode.label), esc(entryMode.detail), { bg: entryMode.bg, border: entryMode.border, fg: entryMode.fg }]
   ];
 
-  const W = 1600, H = 520;
+  const W = 1600, H = 650;
   const margin = 28, gap = 12, cols = 4;
   const cardW = (W - margin*2 - gap*(cols-1)) / cols;
   const cardH = 88;
@@ -1336,7 +1364,7 @@ function metricsPanelSVG(ticker, metrics) {
       <text x="${x+cardW-16}" y="${y+53}" text-anchor="end" font-family="Arial" font-size="13" font-weight="700" fill="${c.fg}">${sub}</text>`;
   };
 
-  const legendY = 438;
+  const legendY = 625;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
     <rect width="${W}" height="${H}" fill="#ffffff"/>
     <text x="${margin}" y="38" font-family="Arial" font-size="25" font-weight="700" fill="#111827">${esc(ticker)} — PANEL FILTER</text>
@@ -1345,8 +1373,28 @@ function metricsPanelSVG(ticker, metrics) {
     <circle cx="${margin+8}" cy="${legendY}" r="7" fill="#22c55e"/><text x="${margin+22}" y="${legendY+6}" font-family="Arial" font-size="15" fill="#166534" font-weight="700">KUAT</text>
     <circle cx="${margin+100}" cy="${legendY}" r="7" fill="#eab308"/><text x="${margin+114}" y="${legendY+6}" font-family="Arial" font-size="15" fill="#854d0e" font-weight="700">SEDANG</text>
     <circle cx="${margin+210}" cy="${legendY}" r="7" fill="#ef4444"/><text x="${margin+224}" y="${legendY+6}" font-family="Arial" font-size="15" fill="#991b1b" font-weight="700">LEMAH</text>
-    <text x="${W-margin}" y="${legendY+6}" text-anchor="end" font-family="Arial" font-size="14" fill="#6b7280">EMA20 ${num(metrics.ema20)} · EMA50 ${num(metrics.ema50)} · PC10 · RSI14 · OBV · W%R14 · Volume</text>
+    <text x="${W-margin}" y="${legendY+6}" text-anchor="end" font-family="Arial" font-size="14" fill="#6b7280">EMA20 ${num(metrics.ema20)} · EMA50 ${num(metrics.ema50)} · PC10 · RSI14 · OBV · W%R14 · MACD · Volume</text>
   </svg>`;
+}
+
+
+function calculateEntryMode(r) {
+  const pfs = Number(r?.score ?? r?.pfs ?? 0);
+  const entry = Number(r?.entryScore ?? 0);
+  const eas = Number(r?.earlyAccumulationScore ?? r?.eas ?? 0);
+  const timing = Number(r?.timingScore ?? r?.timing ?? 0);
+  const trend = Number(r?.trendScore ?? r?.trend ?? 0);
+  const volRatio = Number(r?.volRatio ?? 0);
+  const uptrend = String(r?.trendQuality || '').toUpperCase() === 'UPTREND';
+  const candle = String(r?.candle || '').toUpperCase();
+  const strong = pfs >= 85 && entry >= 85 && eas >= 75 && timing >= 75 && trend >= 80 && uptrend;
+  const medium = pfs >= 75 && entry >= 70 && eas >= 55 && timing >= 55 && trend >= 60 && uptrend;
+  const redPullback = candle === 'BEARISH' && strong && volRatio >= 0.8;
+  const greenConfirm = candle === 'BULLISH' && strong && volRatio >= 1.0;
+  if (redPullback) return { label: '🔥 BUY ON RED PULLBACK', detail: 'Pullback sehat dalam UPTREND', bg: '#dcfce7', border: '#16a34a', fg: '#166534' };
+  if (greenConfirm) return { label: '🟢 BUY ON GREEN CONFIRMATION', detail: 'Konfirmasi bullish + volume mendukung', bg: '#dcfce7', border: '#16a34a', fg: '#166534' };
+  if (medium) return { label: '🟡 WAIT / CICIL', detail: 'Filter cukup kuat, tunggu konfirmasi', bg: '#fef9c3', border: '#eab308', fg: '#854d0e' };
+  return { label: '🔴 AVOID / WAIT', detail: 'Filter belum cukup kuat', bg: '#fee2e2', border: '#ef4444', fg: '#991b1b' };
 }
 
 async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
@@ -1357,15 +1405,17 @@ async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
   if (!Number.isFinite(Number(metrics.accumulationAvg10d))) metrics.accumulationAvg10d = accumulationAverage(chartData, 10);
   const sharp = await ensureSharp();
   const main = await quickChartPNG(quickChartMainConfig(ticker, chartData), 1600, 760);
-  const osc = await quickChartPNG(quickChartOscConfig(ticker, chartData), 1600, 470);
-  const vol = await quickChartPNG(quickChartVolumeObvConfig(ticker, chartData), 1600, 470);
+  const osc = await quickChartPNG(quickChartOscConfig(ticker, chartData), 1600, 430);
+  const vol = await quickChartPNG(quickChartVolumeObvConfig(ticker, chartData), 1600, 420);
+  const macd = await quickChartPNG(quickChartMACDConfig(ticker, chartData), 1600, 350);
   const panel = await sharp(Buffer.from(metricsPanelSVG(ticker, metrics))).png().toBuffer();
-  const final = await sharp({ create: { width: 1600, height: 2220, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } })
+  const final = await sharp({ create: { width: 1600, height: 2610, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } })
     .composite([
       { input: main, top: 0, left: 0 },
       { input: osc, top: 760, left: 0 },
-      { input: vol, top: 1230, left: 0 },
-      { input: panel, top: 1700, left: 0 }
+      { input: vol, top: 1190, left: 0 },
+      { input: macd, top: 1610, left: 0 },
+      { input: panel, top: 1960, left: 0 }
     ])
     .png({ compressionLevel: 6 })
     .toBuffer();
@@ -1414,7 +1464,7 @@ function telegramStockCaption(r) {
     `EMA20 ${fmtTelegramNum(r.ema20)} | EMA50 ${fmtTelegramNum(r.ema50)} | Vol/Avg20 ${fmtTelegramNum(r.volRatio)}x`,
     `Akum 1D ${r.accumulation||'-'} | 5D ${r.accumulation5d||'-'} | 10D ${r.accumulation10d||'-'}`,
     `Close ${fmtTelegramNum(r.close,0)} | Chg ${fmtTelegramPct(r.changePct)} | ${r.trendQuality||'-'}`,
-    `🖼 Chart 30 candle: EMA20/50 + PC10 + RSI14 + OBV + Williams %R14 + Volume`
+    `🖼 Chart 50 candle: EMA20/50 + PC10 + RSI14 + OBV + Williams %R14 + MACD + Volume`
   ].join('\n');
 }
 
@@ -1577,7 +1627,7 @@ function toCSV(rows) {
     "AKUMULASI_1D","RATA_AKUMULASI_1D","AKUMULASI_5D","RATA_AKUMULASI_5D",
     "AKUMULASI_10D","RATA_AKUMULASI_10D","CLOSE","PERUBAHAN_PCT",
     "RSI14","EMA20","EMA50","MACD_HIST","VOL_VS_AVG20","ATR14_PCT",
-    "20D_HIGH","RSR20","RSR60","CANDLE","TREND","ALASAN","CHART_30_CANDLE"
+    "20D_HIGH","RSR20","RSR60","CANDLE","TREND","ALASAN","CHART_50_CANDLE"
   ];
 
   const esc = (v) => {
@@ -1593,7 +1643,7 @@ function toCSV(rows) {
       r.accumulationAvg5d, r.accumulation10d, r.accumulationAvg10d,
       r.close, r.changePct, r.rsi, r.ema20, r.ema50, r.macdHist,
       r.volRatio, r.atrPct, r.high20, r.rsr20, r.rsr60,
-      r.candle, r.trend, r.reason, r.chart30File
+      r.candle, r.trend, r.reason, r.chart50File
     ].map(esc).join(","));
   }
   return lines.join("\n") + "\n";
@@ -2504,7 +2554,7 @@ async function main() {
         candle: s.candle,
         trend: s.trend,
         reason: s.reason,
-        chart30: calculateChartData(stock, CFG.CHART_CANDLES),
+        chart50: calculateChartData(stock, CFG.CHART_CANDLES),
       });
     } catch (error) {
       errors.push({ ticker, error: error.message });
@@ -2550,16 +2600,16 @@ async function main() {
 
   // V66.9 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
   // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
-  // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
+  // 50 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + OBV + Williams %R14 + MACD + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });
   for (const r of qualified) {
     const safeTicker = String(r.ticker).replace(/[^A-Za-z0-9_-]/g, "_");
-    const chartFile = `output/charts/${safeTicker}_30CANDLE.svg`;
-    await fs.writeFile(chartFile, makeStockChartSVG(r.ticker, r.chart30), "utf8");
-    r.chart30File = chartFile;
-    r.chart30Candles = r.chart30.length;
+    const chartFile = `output/charts/${safeTicker}_50CANDLE.svg`;
+    await fs.writeFile(chartFile, makeStockChartSVG(r.ticker, r.chart50), "utf8");
+    r.chart50File = chartFile;
+    r.chart50Candles = r.chart50.length;
     try {
-      r.telegramChartPng = await renderTelegramChartPNG(r.ticker, r.chart30, {
+      r.telegramChartPng = await renderTelegramChartPNG(r.ticker, r.chart50, {
         pfs: r.score, entryScore: r.entryScore, entryDecision: r.entryDecision, entryGrade: r.entryGrade,
         eas: r.earlyAccumulationScore, timing: r.timingScore, trend: r.trendScore, rsr20: r.rsr20, rsr60: r.rsr60,
         rsi14: r.rsi14, macdHist: r.macdHist, volRatio: r.volRatio, atrPct: r.atrPct,
@@ -2569,7 +2619,8 @@ async function main() {
         volatility: r.volatility, candle: r.candle, reason: r.reason,
         ema20: r.ema20, ema50: r.ema50, macdHist: r.macdHist,
         accumulationScore: r.accumulationScore, accumulation5dScore: r.accumulation5dScore, accumulation10dScore: r.accumulation10dScore,
-        trend: r.trend, williamsR14: r.williamsR14, obv: r.obv
+        trend: r.trend, williamsR14: r.williamsR14, obv: r.obv,
+        entryMode: calculateEntryMode(r)
       });
       const pngFile = `output/charts/${safeTicker}_REALTIME.png`;
       await fs.writeFile(pngFile, r.telegramChartPng);

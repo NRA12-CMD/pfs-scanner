@@ -1,4 +1,4 @@
-// PFS Scanner V66.10 TELEGRAM DASHBOARD CHART - 50 CANDLE + MACD + ENTRY MODE - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V66.11 SAFE ENTRY - 50 CANDLE + MACD + ENTRY SAFETY - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -9,7 +9,7 @@
 // - Timeframe: Daily 1D
 // - Lookback: 100 trading candles (fetch window expanded to calendar days automatically)
 // - Base Minimum PFS: 62
-// - STRICT qualification: PFS + EAS + Timing + Trend + Entry Score + UPTREND
+// - STRICT qualification: PFS + EAS + Timing + Trend + Entry Score + Entry Safety + UPTREND
 // - Maximum displayed results: 50
 // - Source: Yahoo Finance chart endpoint
 //
@@ -530,10 +530,6 @@ function calculateEarlyAccumulationScore(stock, calc) {
   const ema50 = calcEMAAt(stock.map((x) => Number(x.close) || 0), 50);
   const macdHist = Number(calc.latest.macdHist ?? 0);
 
-  const lookback = stock.slice(Math.max(0, stock.length - 20));
-  const high20 = Math.max(...lookback.map((x) => Number(x.high) || 0));
-  const nearHigh = high20 > 0 ? close / high20 : 0;
-
   let score = 0;
   const reasons = [];
 
@@ -560,10 +556,14 @@ function calculateEarlyAccumulationScore(stock, calc) {
   if (acc10 > 0) { score += 15; reasons.push("Akumulasi 10D"); }
   else if (acc10 >= -2) score += 8;
 
-  if (nearHigh >= 0.98) { score += 15; reasons.push("Dekat High 20D"); }
-  else if (nearHigh >= 0.95) score += 10;
+  // V66.11: High20 tidak lagi memberi bonus EAS.
+  // Kedekatan High20 dipakai khusus untuk menilai keamanan entry,
+  // agar EAS tidak mendorong pembelian saham yang sudah terlalu tinggi.
+  const obvTrend = Boolean(calc.latest.obvTrend);
+  if (obvTrend) { score += 15; reasons.push("OBV mendukung"); }
+  else if (Number(calc.latest.obv ?? 0) > 0) score += 5;
 
-  if (rsi >= 50 && rsi <= 70) { score += 10; reasons.push("RSI sehat"); }
+  if (rsi >= 50 && rsi <= 68) { score += 10; reasons.push("RSI sehat"); }
   else if (rsi >= 45 && rsi < 50) score += 5;
 
   if (macdHist > 0) { score += 10; reasons.push("MACD positif"); }
@@ -588,7 +588,7 @@ function calculateEarlyAccumulationScore(stock, calc) {
     reasons,
     acc5,
     acc10,
-    nearHigh
+    obvTrend
   };
 }
 
@@ -700,6 +700,76 @@ function calculateEntryDecision(pfs, eas, trendScore, timingScore) {
   }
 
   return { entryScore, entryDecision, entryGrade };
+}
+
+function calculateEntrySafety(stock, calc, s, eas, trendScore, timingScore, entryScore) {
+  const last = stock?.at(-1);
+  const prev = stock?.at(-2);
+  if (!last || !prev || !calc?.latest) {
+    return { safe: false, score: 0, mode: "🔴 AVOID / WAIT", reason: "Data entry tidak cukup", distEma20Pct: null, distHighPct: null };
+  }
+
+  const close = Number(last.close);
+  const ema20 = Number(calc.latest.ema20 || 0);
+  const ema50 = Number(s?.ema50 || calc.latest.ema50 || 0);
+  const rsi = Number(s?.rsi || calc.latest.rsi || calcRSI(stock, stock.length - 1, 14));
+  const willr = Number(calc.latest.willr ?? -50);
+  const macdHist = Number(calc.latest.macdHist || 0);
+  const volRatio = Number(s?.volRatio || 0);
+  const high20 = Math.max(...stock.slice(-20).map(z => Number(z.high) || 0));
+  const distEma20Pct = ema20 > 0 ? ((close / ema20) - 1) * 100 : 999;
+  const distHighPct = high20 > 0 ? ((high20 - close) / high20) * 100 : 999;
+  const dailyChange = Number(s?.changePct ?? (prev.close ? ((close / Number(prev.close)) - 1) * 100 : 0));
+  const range = Number(last.high) - Number(last.low);
+  const closeLocation = range > 0 ? (close - Number(last.low)) / range : 0.5;
+  const bullish = close > Number(last.open);
+  const bearish = close < Number(last.open);
+  const uptrend = String(s?.trendQuality || '').toUpperCase() === 'UPTREND';
+
+  // Terlalu jauh dari EMA20 / RSI tinggi / lonjakan candle = jangan kejar.
+  const overextended =
+    rsi > 72 ||
+    distEma20Pct > 8 ||
+    (bullish && dailyChange > 4 && distEma20Pct > 5) ||
+    (distHighPct <= 0.5 && dailyChange > 3 && volRatio > 1.8);
+
+  let score = 0;
+  if (distEma20Pct >= -1 && distEma20Pct <= 3) score += 25;
+  else if (distEma20Pct >= -2 && distEma20Pct <= 5) score += 18;
+  else if (distEma20Pct <= 7) score += 8;
+
+  if (rsi >= 48 && rsi <= 65) score += 20;
+  else if (rsi >= 42 && rsi <= 70) score += 12;
+
+  if (willr >= -80 && willr <= -35) score += 15;
+  else if (willr > -90 && willr <= -20) score += 8;
+
+  if (macdHist > 0) score += 15;
+  else if (macdHist >= -0.01) score += 7;
+
+  if (volRatio >= 0.8 && volRatio <= 1.8) score += 10;
+  else if (volRatio >= 0.6) score += 5;
+
+  if (close >= ema20 && ema20 >= ema50) score += 10;
+  else if (close >= ema20) score += 5;
+
+  if (overextended) score -= 30;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  const strongQuality = Number(s?.score || 0) >= 85 && Number(eas || 0) >= 75 && Number(trendScore || 0) >= 80 && Number(timingScore || 0) >= 75 && Number(entryScore || 0) >= 85 && uptrend;
+  const mediumQuality = Number(s?.score || 0) >= 75 && Number(eas || 0) >= 55 && Number(trendScore || 0) >= 60 && Number(timingScore || 0) >= 55 && Number(entryScore || 0) >= 70 && uptrend;
+
+  if (overextended) {
+    return { safe: false, score, mode: "🟡 WAIT PULLBACK", reason: `Terlalu jauh dari EMA20 (${distEma20Pct.toFixed(1)}%) / RSI ${rsi.toFixed(1)}`, distEma20Pct, distHighPct };
+  }
+
+  const redPullback = bearish && dailyChange >= -2.5 && distEma20Pct >= -1 && distEma20Pct <= 4 && rsi <= 68 && macdHist >= -0.01 && volRatio >= 0.8 && strongQuality;
+  const greenConfirm = bullish && dailyChange <= 4 && distEma20Pct <= 5 && distHighPct <= 4 && volRatio >= 1.0 && macdHist > 0 && strongQuality;
+
+  if (redPullback) return { safe: true, score, mode: "🔥 BUY ON RED PULLBACK", reason: "Pullback sehat, struktur UPTREND masih terjaga", distEma20Pct, distHighPct };
+  if (greenConfirm) return { safe: true, score, mode: "🟢 BUY ON GREEN CONFIRMATION", reason: "Konfirmasi bullish + volume mendukung", distEma20Pct, distHighPct };
+  if (mediumQuality && score >= 70) return { safe: false, score, mode: "🟡 WAIT / CICIL", reason: "Setup cukup kuat, tunggu harga masuk area aman", distEma20Pct, distHighPct };
+  return { safe: false, score, mode: "🔴 AVOID / WAIT", reason: "Kualitas entry belum aman", distEma20Pct, distHighPct };
 }
 
 function screenScore(stock, calc) {
@@ -1326,7 +1396,14 @@ function metricsPanelSVG(ticker, metrics) {
     return "LEMAH";
   };
 
-  const entryMode = metrics.entryMode || { label: "🟡 WAIT / CICIL", detail: "Tunggu konfirmasi", bg: "#fef9c3", border: "#eab308", fg: "#854d0e" };
+  const rawEntryMode = String(metrics.entryMode || "🟡 WAIT / CICIL");
+  const entryMode = rawEntryMode.includes("RED PULLBACK")
+    ? { label: rawEntryMode, detail: String(metrics.entrySafetyReason || "Pullback sehat"), bg: "#dcfce7", border: "#16a34a", fg: "#166534" }
+    : rawEntryMode.includes("GREEN CONFIRMATION")
+      ? { label: rawEntryMode, detail: String(metrics.entrySafetyReason || "Konfirmasi bullish"), bg: "#dcfce7", border: "#16a34a", fg: "#166534" }
+      : rawEntryMode.includes("WAIT PULLBACK") || rawEntryMode.includes("WAIT / CICIL")
+        ? { label: rawEntryMode, detail: String(metrics.entrySafetyReason || "Tunggu area entry aman"), bg: "#fef9c3", border: "#eab308", fg: "#854d0e" }
+        : { label: rawEntryMode, detail: String(metrics.entrySafetyReason || "Entry belum aman"), bg: "#fee2e2", border: "#ef4444", fg: "#991b1b" };
   const cards = [
     ["PFS", `${integer(metrics.pfs)}/100`, scoreLabel(metrics.pfs,85,75), bandScore(metrics.pfs,85,75)],
     ["ENTRY", `${integer(metrics.entryScore)}/100`, `${esc(metrics.entryGrade || "-")} · ${esc(metrics.entryDecision || "-")}`, bandScore(metrics.entryScore,85,70)],
@@ -1459,6 +1536,7 @@ function telegramStockCaption(r) {
     `📊 ${r.ticker} | PFS REALTIME`,
     `PFS ${fmtTelegramInt(r.score)}/100 | ${r.signal || '-'}`,
     `ENTRY ${fmtTelegramInt(r.entryScore)}/100 | ${r.entryDecision || '-'} | Grade ${r.entryGrade || '-'}`,
+    `${r.entryMode || '🔴 AVOID / WAIT'} | Safety ${fmtTelegramInt(r.entrySafetyScore)}/100`,
     `EAS ${fmtTelegramInt(r.earlyAccumulationScore)} | Timing ${fmtTelegramInt(r.timingScore)} | Trend ${fmtTelegramInt(r.trendScore)}`,
     `RSI14 ${fmtTelegramNum(r.rsi14)} | OBV ${fmtTelegramNum(r.obv)} | W%R14 ${fmtTelegramNum(r.williamsR14)}`,
     `EMA20 ${fmtTelegramNum(r.ema20)} | EMA50 ${fmtTelegramNum(r.ema50)} | Vol/Avg20 ${fmtTelegramNum(r.volRatio)}x`,
@@ -1623,7 +1701,7 @@ async function loadSymbols() {
 
 function toCSV(rows) {
   const headers = [
-    "RANK","SAHAM","PFS","TIMING_SCORE","TREND_SCORE","ENTRY_SCORE","ENTRY_DECISION","ENTRY_GRADE","SIGNAL","VOLATILITAS","EAS","EARLY_ACCUMULATION",
+    "RANK","SAHAM","PFS","TIMING_SCORE","TREND_SCORE","ENTRY_SCORE","ENTRY_DECISION","ENTRY_GRADE","ENTRY_SAFETY_SCORE","ENTRY_SAFETY","ENTRY_MODE","SIGNAL","VOLATILITAS","EAS","EARLY_ACCUMULATION",
     "AKUMULASI_1D","RATA_AKUMULASI_1D","AKUMULASI_5D","RATA_AKUMULASI_5D",
     "AKUMULASI_10D","RATA_AKUMULASI_10D","CLOSE","PERUBAHAN_PCT",
     "RSI14","EMA20","EMA50","MACD_HIST","VOL_VS_AVG20","ATR14_PCT",
@@ -1638,7 +1716,7 @@ function toCSV(rows) {
   const lines = [headers.join(",")];
   for (const r of rows) {
     lines.push([
-      r.rank, r.ticker, r.score, r.timingScore, r.trendScore, r.entryScore, r.entryDecision, r.entryGrade, r.signal, r.volatility, r.earlyAccumulationScore, r.earlyAccumulationLabel,
+      r.rank, r.ticker, r.score, r.timingScore, r.trendScore, r.entryScore, r.entryDecision, r.entryGrade, r.entrySafetyScore, r.entrySafety, r.entryMode, r.signal, r.volatility, r.earlyAccumulationScore, r.earlyAccumulationLabel,
       r.accumulation, r.accumulationAvg1d, r.accumulation5d,
       r.accumulationAvg5d, r.accumulation10d, r.accumulationAvg10d,
       r.close, r.changePct, r.rsi, r.ema20, r.ema50, r.macdHist,
@@ -2503,6 +2581,7 @@ async function main() {
       const trendScore = calculateTrendScore(stock, calc, s);
       const timingScore = calculateTimingScore(stock, calc, s);
       const entry = calculateEntryDecision(s.score, eas.score, trendScore, timingScore);
+      const entrySafety = calculateEntrySafety(stock, calc, s, eas.score, trendScore, timingScore, entry.entryScore);
       const last = stock.at(-1);
       const prev = stock.at(-2);
 
@@ -2517,6 +2596,12 @@ async function main() {
         entryScore: entry.entryScore,
         entryDecision: entry.entryDecision,
         entryGrade: entry.entryGrade,
+        entrySafetyScore: entrySafety.score,
+        entrySafety: entrySafety.safe ? "AMAN" : "TUNGGU",
+        entryMode: entrySafety.mode,
+        entrySafetyReason: entrySafety.reason,
+        distEma20Pct: entrySafety.distEma20Pct,
+        distHighPct: entrySafety.distHighPct,
         earlyAccumulationScore: eas.score,
         earlyAccumulationLabel: eas.label,
         earlyAccumulationReason: eas.reasons.join(" | "),
@@ -2561,17 +2646,18 @@ async function main() {
     }
   }
 
-  // V62 STRICT: semua skor utama menjadi FILTER WAJIB, bukan sekadar ranking.
-  // PFS >= 75, EAS >= 55, Trend >= 60, Timing >= 55, Entry >= 70, dan UPTREND.
-  // Dengan demikian penambahan skor benar-benar mengurangi kandidat yang lolos.
+  // V66.11 SAFE ENTRY: skor utama + Entry Safety menjadi FILTER WAJIB.
+  // PFS >= 75, EAS >= 55, Trend >= 60, Timing >= 55, Entry >= 70, Entry Safety=AMAN, UPTREND.
+  // High20 tidak lagi memberi bonus EAS; High20 dipakai untuk menghindari entry yang sudah terlalu extended.
   const rejectedByStrictFilter = results.filter((r) => {
     const passPFS = r.score >= CFG.QUALIFY_MIN_PFS;
     const passEAS = r.earlyAccumulationScore >= CFG.QUALIFY_MIN_EAS;
     const passTrend = r.trendScore >= CFG.QUALIFY_MIN_TREND;
     const passTiming = r.timingScore >= CFG.QUALIFY_MIN_TIMING;
     const passEntry = r.entryScore >= CFG.QUALIFY_MIN_ENTRY;
+    const passEntrySafety = r.entrySafety === "AMAN";
     const passTrendQuality = !CFG.REQUIRE_UPTREND || r.trendQuality === "UPTREND";
-    return !(passPFS && passEAS && passTrend && passTiming && passEntry && passTrendQuality);
+    return !(passPFS && passEAS && passTrend && passTiming && passEntry && passEntrySafety && passTrendQuality);
   }).length;
 
   const qualified = results
@@ -2581,8 +2667,9 @@ async function main() {
       const passTrend = r.trendScore >= CFG.QUALIFY_MIN_TREND;
       const passTiming = r.timingScore >= CFG.QUALIFY_MIN_TIMING;
       const passEntry = r.entryScore >= CFG.QUALIFY_MIN_ENTRY;
+      const passEntrySafety = r.entrySafety === "AMAN";
       const passTrendQuality = !CFG.REQUIRE_UPTREND || r.trendQuality === "UPTREND";
-      return passPFS && passEAS && passTrend && passTiming && passEntry && passTrendQuality;
+      return passPFS && passEAS && passTrend && passTiming && passEntry && passEntrySafety && passTrendQuality;
     })
     .sort(
       (a, b) =>
@@ -2611,6 +2698,7 @@ async function main() {
     try {
       r.telegramChartPng = await renderTelegramChartPNG(r.ticker, r.chart50, {
         pfs: r.score, entryScore: r.entryScore, entryDecision: r.entryDecision, entryGrade: r.entryGrade,
+        entrySafetyScore: r.entrySafetyScore, entrySafety: r.entrySafety, entryMode: r.entryMode, entrySafetyReason: r.entrySafetyReason,
         eas: r.earlyAccumulationScore, timing: r.timingScore, trend: r.trendScore, rsr20: r.rsr20, rsr60: r.rsr60,
         rsi14: r.rsi14, macdHist: r.macdHist, volRatio: r.volRatio, atrPct: r.atrPct,
         accumulation: r.accumulation, accumulation5d: r.accumulation5d, accumulation10d: r.accumulation10d,
@@ -2620,7 +2708,6 @@ async function main() {
         ema20: r.ema20, ema50: r.ema50, macdHist: r.macdHist,
         accumulationScore: r.accumulationScore, accumulation5dScore: r.accumulation5dScore, accumulation10dScore: r.accumulation10dScore,
         trend: r.trend, williamsR14: r.williamsR14, obv: r.obv,
-        entryMode: calculateEntryMode(r)
       });
       const pngFile = `output/charts/${safeTicker}_REALTIME.png`;
       await fs.writeFile(pngFile, r.telegramChartPng);
@@ -2684,6 +2771,7 @@ async function main() {
     `EAS/Timing  : >= ${CFG.QUALIFY_MIN_EAS} / >= ${CFG.QUALIFY_MIN_TIMING}\n` +
     `Trend/Entry : >= ${CFG.QUALIFY_MIN_TREND} / >= ${CFG.QUALIFY_MIN_ENTRY}\n` +
     `Trend wajib : ${CFG.REQUIRE_UPTREND ? "UPTREND" : "TIDAK"}\n` +
+    `Entry Safety: WAJIB AMAN (anti-kejar harga)\n` +
     `Dicek       : ${symbols.length}\n` +
     `Berhasil    : ${results.length}\n` +
     `Ditolak     : ${rejectedByStrictFilter}\n` +

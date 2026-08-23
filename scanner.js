@@ -969,6 +969,122 @@ ${labels}
 </svg>`;
 }
 
+
+async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
+  if (!Array.isArray(chartData) || !chartData.length) return null;
+
+  const labels = chartData.map(d => d.date);
+  const candleData = chartData.map(d => ({
+    x: d.date,
+    o: Number(d.open),
+    h: Number(d.high),
+    l: Number(d.low),
+    c: Number(d.close),
+  }));
+  const lineData = (key, axis = 'yPrice') => chartData.map(d => ({ x: d.date, y: Number(d[key]) }));
+
+  const caption = [
+    `PFS ${Number(metrics.pfs ?? 0)}/100`,
+    `ENTRY ${metrics.entryDecision || '-'} ${metrics.entryGrade || ''}`,
+    `EAS ${Number(metrics.eas ?? 0)}/100`,
+    `TIMING ${Number(metrics.timing ?? 0)}/100`,
+    `TREND ${Number(metrics.trend ?? 0)}/100`,
+    `RSR20 ${Number(metrics.rsr20 ?? 0)}`,
+    `RSI14 ${Number(metrics.rsi ?? 0).toFixed(1)}`,
+    `MACD ${Number(metrics.macdHist ?? 0).toFixed(2)}`,
+    `VOL ${Number(metrics.volRatio ?? 0).toFixed(2)}x`,
+    `ATR ${Number(metrics.atrPct ?? 0).toFixed(2)}%`,
+    `AKUM ${metrics.accumulation || '-'} / 5D ${metrics.accumulation5d || '-'} / 10D ${metrics.accumulation10d || '-'}`,
+    `CLOSE ${formatPrice(metrics.close)} (${Number(metrics.changePct || 0) >= 0 ? '+' : ''}${Number(metrics.changePct || 0).toFixed(2)}%)`,
+    `DATA ${metrics.dataDate || '-'}`
+  ].join(' | ');
+
+  const chartConfig = {
+    type: 'candlestick',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Harga', data: candleData, yAxisID: 'yPrice', color: { up: '#16a34a', down: '#ef4444', unchanged: '#6b7280' } },
+        { type: 'line', label: 'EMA20', data: lineData('ema20'), yAxisID: 'yPrice', borderColor: '#2563eb', borderWidth: 2, pointRadius: 0 },
+        { type: 'line', label: 'EMA50', data: lineData('ema50'), yAxisID: 'yPrice', borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0 },
+        { type: 'line', label: 'PC High10', data: lineData('priceChannelHigh10'), yAxisID: 'yPrice', borderColor: '#7c3aed', borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
+        { type: 'line', label: 'PC Low10', data: lineData('priceChannelLow10'), yAxisID: 'yPrice', borderColor: '#7c3aed', borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
+        { type: 'line', label: 'RSI14', data: lineData('rsi14'), yAxisID: 'yRsi', borderColor: '#0891b2', borderWidth: 2, pointRadius: 0 },
+        { type: 'bar', label: 'MACD Hist', data: lineData('macdHist'), yAxisID: 'yMacd', backgroundColor: chartData.map(d => Number(d.macdHist) >= 0 ? '#16a34a' : '#ef4444'), barPercentage: 0.7 },
+        { type: 'bar', label: 'Volume', data: lineData('volume'), yAxisID: 'yVol', backgroundColor: chartData.map(d => Number(d.close) >= Number(d.open) ? 'rgba(22,163,74,0.35)' : 'rgba(239,68,68,0.35)'), barPercentage: 0.7 },
+      ]
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      plugins: {
+        legend: { display: true, position: 'top' },
+        title: { display: true, text: [`${ticker} — REALTIME SCREENING`, caption], font: { size: 16, weight: 'bold' }, padding: 12 }
+      },
+      scales: {
+        x: { type: 'category', ticks: { maxTicksLimit: 8, autoSkip: true } },
+        yPrice: { type: 'linear', position: 'left', title: { display: true, text: 'Harga' } },
+        yRsi: { type: 'linear', position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: 'RSI14' } },
+        yMacd: { type: 'linear', position: 'right', display: false, grid: { drawOnChartArea: false } },
+        yVol: { type: 'linear', position: 'right', display: false, grid: { drawOnChartArea: false } }
+      }
+    }
+  };
+
+  const response = await fetch('https://quickchart.io/chart', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      version: '4', width: 1400, height: 900, devicePixelRatio: 1,
+      format: 'png', backgroundColor: 'white', chart: chartConfig
+    })
+  });
+  if (!response.ok) throw new Error(`QuickChart HTTP ${response.status}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw new Error('QuickChart mengembalikan gambar kosong.');
+  return buffer;
+}
+
+async function sendTelegramPhoto(chatId, imageBuffer, caption = '') {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !chatId || !imageBuffer) return;
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) form.append('caption', caption.slice(0, 1024));
+  form.append('photo', new Blob([imageBuffer], { type: 'image/png' }), 'pfs_chart.png');
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form });
+  const result = await response.json();
+  if (!result.ok) throw new Error(result.description || 'Telegram sendPhoto gagal');
+}
+
+function telegramStockCaption(r) {
+  return [
+    `📊 ${r.ticker} | PFS REALTIME`,
+    `PFS ${fmtTelegramInt(r.score)}/100 | ${r.signal || '-'}`,
+    `🎯 ENTRY ${fmtTelegramInt(r.entryScore)}/100 | ${r.entryDecision || '-'} | Grade ${r.entryGrade || '-'}`,
+    `⏱ Timing ${fmtTelegramInt(r.timingScore)} | 📈 Trend ${fmtTelegramInt(r.trendScore)} | EAS ${fmtTelegramInt(r.earlyAccumulationScore)}`,
+    `RSR20 ${fmtTelegramInt(r.rsr20)} | RSI14 ${fmtTelegramNum(r.rsi14)} | MACD ${fmtTelegramNum(r.macdHist)}`,
+    `VOL/AVG20 ${fmtTelegramNum(r.volRatio)}x | ATR14 ${fmtTelegramPct(r.atrPct)} | Volatilitas ${r.volatility || '-'}`,
+    `Akum ${r.accumulation || '-'} | 5D ${r.accumulation5d || '-'} | 10D ${r.accumulation10d || '-'}`,
+    `Close ${fmtTelegramNum(r.close, 0)} | Chg ${fmtTelegramPct(r.changePct)} | Trend ${r.trendQuality || '-'}`,
+    `🕯 30 CANDLE + EMA20/50 + PC10 + RSI14 + MACD + VOLUME`,
+    `🕒 Data: ${r.dataDate || '-'} | chart dibuat saat screening`
+  ].join('\n');
+}
+
+const fmtTelegramNum = (value, decimals = 2) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(decimals) : '-';
+};
+const fmtTelegramInt = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n).toString() : '-';
+};
+const fmtTelegramPct = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${n.toFixed(2)}%` : '-';
+};
+
 function parseYahooHistoryBody(json, symbol) {
   if (!json.chart?.result?.length) {
     const err = json.chart?.error
@@ -2084,8 +2200,9 @@ async function main() {
     r.rank = i + 1;
   });
 
-  // V66.2 CHART: hanya saham yang LOLOS filter yang dibuatkan chart.
-  // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume.
+  // V66.3 REALTIME TELEGRAM CHART: hanya saham LOLOS yang dibuatkan chart.
+  // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
+  // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });
   for (const r of qualified) {
     const safeTicker = String(r.ticker).replace(/[^A-Za-z0-9_-]/g, "_");
@@ -2093,6 +2210,21 @@ async function main() {
     await fs.writeFile(chartFile, makeStockChartSVG(r.ticker, r.chart30), "utf8");
     r.chart30File = chartFile;
     r.chart30Candles = r.chart30.length;
+    try {
+      r.telegramChartPng = await renderTelegramChartPNG(r.ticker, r.chart30, {
+        pfs: r.score, entryScore: r.entryScore, entryDecision: r.entryDecision, entryGrade: r.entryGrade,
+        eas: r.earlyAccumulationScore, timing: r.timingScore, trend: r.trendScore, rsr20: r.rsr20,
+        rsi: r.rsi14, macdHist: r.macdHist, volRatio: r.volRatio, atrPct: r.atrPct,
+        accumulation: r.accumulation, accumulation5d: r.accumulation5d, accumulation10d: r.accumulation10d,
+        close: r.close, changePct: r.changePct, dataDate: r.dataDate
+      });
+      const pngFile = `output/charts/${safeTicker}_REALTIME.png`;
+      await fs.writeFile(pngFile, r.telegramChartPng);
+      r.telegramChartFile = pngFile;
+    } catch (chartError) {
+      r.telegramChartError = chartError.message;
+      console.warn(`QuickChart gagal ${r.ticker}: ${chartError.message}`);
+    }
   }
 
   await fs.mkdir("output", { recursive: true });
@@ -2108,7 +2240,7 @@ async function main() {
       qualified: qualified.length,
       rejectedByStrictFilter,
       errors: errors.length,
-      results: qualified,
+      results: qualified.map(({ telegramChartPng, ...r }) => r),
     }, null, 2)
   );
 
@@ -2206,6 +2338,22 @@ async function main() {
   const TELEGRAM_LIMIT = 3800;
   for (let i = 0; i < telegramText.length; i += TELEGRAM_LIMIT) {
     await sendTelegram(telegramText.substring(i, i + TELEGRAM_LIMIT));
+  }
+
+  // Kirim SATU CHART PER SAHAM LOLOS sebagai foto Telegram.
+  // Foto dibuat realtime dari data Yahoo yang baru saja dipakai screening.
+  for (const r of qualified) {
+    if (!r.telegramChartPng) continue;
+    try {
+      await sendTelegramPhoto(
+        process.env.TELEGRAM_CHAT_ID,
+        r.telegramChartPng,
+        telegramStockCaption(r)
+      );
+    } catch (photoError) {
+      console.error(`Gagal kirim chart Telegram ${r.ticker}:`, photoError.message);
+      await sendTelegramTo(process.env.TELEGRAM_CHAT_ID, `⚠️ Chart ${r.ticker} gagal dikirim: ${photoError.message}`);
+    }
   }
 
   console.log("");

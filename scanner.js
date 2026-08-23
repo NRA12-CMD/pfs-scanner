@@ -1,4 +1,4 @@
-// PFS Scanner V66.2 CHART 30 CANDLE - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
+// PFS Scanner V66.4 TELEGRAM DASHBOARD CHART - HIGH WINRATE - GITHUB ACTIONS CONTROLLER - FAST 100D
 // PFS Scanner V66 HIGH WINRATE - PFS + EAS + Timing + Trend + Entry + Adaptive Recovery + Telegram Controller
 // FIX V64.2: header is valid JavaScript comments; no plain-text title outside comments.
 // Converted from V59_PFS_MIN_62_FAST_SCREENING.gs
@@ -25,6 +25,10 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 async function sendTelegram(message) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -881,6 +885,11 @@ function calculateChartData(stock, candles = CFG.CHART_CANDLES) {
     const pcHigh = Math.max(...window.map(x => Number(x.high) || 0));
     const pcLow = Math.min(...window.map(x => Number(x.low) || 0));
     const rsi14 = calcRSI(stock, i, 14);
+    const wrStart = Math.max(0, i - 14 + 1);
+    const wrWindow = stock.slice(wrStart, i + 1);
+    const wrHigh = Math.max(...wrWindow.map(x => Number(x.high) || 0));
+    const wrLow = Math.min(...wrWindow.map(x => Number(x.low) || 0));
+    const williamsR14 = wrHigh === wrLow ? -50 : ((wrHigh - Number(bar.close)) / (wrHigh - wrLow)) * -100;
     const ema8all = ema(closes, 8);
     const ema14all = ema(closes, 14);
     const macdLine = ema8all[i] - ema14all[i];
@@ -899,6 +908,7 @@ function calculateChartData(stock, candles = CFG.CHART_CANDLES) {
       priceChannelHigh10: pcHigh,
       priceChannelLow10: pcLow,
       rsi14: Number(rsi14),
+      williamsR14: Number(williamsR14),
       macdHist: Number.isFinite(Number(macdHist)) ? Number(macdHist) : 0,
       obv: Number(obvArr[i]) || 0,
     };
@@ -909,140 +919,241 @@ function svgEsc(v) {
   return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-function makeStockChartSVG(ticker, chartData) {
+function makeStockChartSVG(ticker, chartData, metrics = {}) {
   if (!chartData?.length) return "";
-  const W = 1200, H = 900;
-  const left = 70, right = 25, top = 55, gap = 35;
-  const mainH = 430, rsiH = 130, macdH = 130, volH = 100;
+  const W = 1600, H = 1700;
+  const left = 90, right = 45, top = 95, gap = 18;
   const plotW = W - left - right;
   const n = chartData.length;
   const x = i => left + (n === 1 ? plotW / 2 : i * plotW / (n - 1));
-  const allPrices = chartData.flatMap(d => [d.high, d.low, d.ema20, d.ema50, d.priceChannelHigh10, d.priceChannelLow10]).filter(Number.isFinite);
+  const priceH = 500, rsiH = 150, obvH = 150, wrH = 150, volH = 145;
+  const rsiTop = top + priceH + gap;
+  const obvTop = rsiTop + rsiH + gap;
+  const wrTop = obvTop + obvH + gap;
+  const volTop = wrTop + wrH + gap;
+  const summaryTop = volTop + volH + 28;
+
+  const allPrices = chartData.flatMap(d => [
+    d.high, d.low, d.ema20, d.ema50, d.priceChannelHigh10, d.priceChannelLow10
+  ]).filter(Number.isFinite);
   const minP = Math.min(...allPrices), maxP = Math.max(...allPrices);
   const padP = Math.max((maxP - minP) * 0.08, maxP * 0.005 || 1);
   const pMin = minP - padP, pMax = maxP + padP;
-  const py = v => top + (pMax - v) / (pMax - pMin) * mainH;
-  const rsiTop = top + mainH + gap;
-  const ry = v => rsiTop + (100 - v) / 100 * rsiH;
-  const macdTop = rsiTop + rsiH + gap;
-  const macds = chartData.map(d => d.macdHist).filter(Number.isFinite);
-  const maxM = Math.max(...macds.map(Math.abs), 0.000001) * 1.15;
-  const my = v => macdTop + (maxM - v) / (2 * maxM) * macdH;
-  const volTop = macdTop + macdH + gap;
-  const maxV = Math.max(...chartData.map(d => d.volume), 1);
+  const py = v => top + (pMax - v) / (pMax - pMin) * priceH;
+
+  const ry = v => rsiTop + (100 - Math.max(0, Math.min(100, v))) / 100 * rsiH;
+  const wrY = v => wrTop + (-Math.max(-100, Math.min(0, v))) / 100 * wrH;
+  const obvs = chartData.map(d => Number(d.obv) || 0);
+  const obvMin = Math.min(...obvs), obvMax = Math.max(...obvs);
+  const obvPad = Math.max((obvMax - obvMin) * 0.08, 1);
+  const obvLo = obvMin - obvPad, obvHi = obvMax + obvPad;
+  const oy = v => obvTop + (obvHi - v) / (obvHi - obvLo) * obvH;
+
+  const maxV = Math.max(...chartData.map(d => Number(d.volume) || 0), 1);
   const vy = v => volTop + (maxV - v) / maxV * volH;
-  const cw = Math.max(5, Math.min(16, plotW / n * 0.58));
-  const line = (key, mapper) => chartData.map((d,i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${mapper(d[key]).toFixed(1)}`).join(" ");
-  const candle = chartData.map((d,i) => {
+  const cw = Math.max(8, Math.min(24, plotW / n * 0.58));
+
+  const line = (key, mapper) => chartData.map((d,i) => {
+    const v = Number(d[key]);
+    return Number.isFinite(v) ? `${i ? "L" : "M"}${x(i).toFixed(1)},${mapper(v).toFixed(1)}` : "";
+  }).filter(Boolean).join(" ");
+
+  const candles = chartData.map((d,i) => {
     const xx=x(i), yO=py(d.open), yC=py(d.close), yH=py(d.high), yL=py(d.low);
-    const y=Math.min(yO,yC), h=Math.max(1,Math.abs(yC-yO));
-    const up=d.close>=d.open;
-    return `<line x1="${xx.toFixed(1)}" y1="${yH.toFixed(1)}" x2="${xx.toFixed(1)}" y2="${yL.toFixed(1)}" stroke="${up ? '#15803d' : '#dc2626'}" stroke-width="1.5"/><rect x="${(xx-cw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${h.toFixed(1)}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
+    const y=Math.min(yO,yC), h=Math.max(2,Math.abs(yC-yO));
+    const up=Number(d.close)>=Number(d.open);
+    const body=up ? "#16a34a" : "#ef4444";
+    return `<line x1="${xx.toFixed(1)}" y1="${yH.toFixed(1)}" x2="${xx.toFixed(1)}" y2="${yL.toFixed(1)}" stroke="${body}" stroke-width="2"/><rect x="${(xx-cw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${h.toFixed(1)}" rx="1" fill="${body}" stroke="${body}"/>`;
   }).join("");
-  const macdBars = chartData.map((d,i) => {
-    const xx=x(i)-cw/2, y0=my(0), y=my(d.macdHist), h=Math.max(1,Math.abs(y-y0));
-    return `<rect x="${xx.toFixed(1)}" y="${Math.min(y,y0).toFixed(1)}" width="${cw.toFixed(1)}" height="${h.toFixed(1)}" fill="${d.macdHist>=0?'#16a34a':'#ef4444'}" opacity="0.75"/>`;
+
+  const volumes = chartData.map((d,i) => {
+    const xx=x(i)-cw/2, y=vy(Number(d.volume)||0);
+    const body=Number(d.close)>=Number(d.open) ? "#16a34a" : "#ef4444";
+    return `<rect x="${xx.toFixed(1)}" y="${y.toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(1,volTop+volH-y).toFixed(1)}" fill="${body}" opacity="0.62"/>`;
   }).join("");
-  const volumes = chartData.map((d,i) => `<rect x="${(x(i)-cw/2).toFixed(1)}" y="${vy(d.volume).toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(1,volTop+volH-vy(d.volume)).toFixed(1)}" fill="${d.close>=d.open?'#16a34a':'#ef4444'}" opacity="0.65"/>`).join("");
-  const labels = chartData.map((d,i) => i % 5 === 0 || i === n-1 ? `<text x="${x(i).toFixed(1)}" y="${H-8}" font-size="11" text-anchor="middle" fill="#555">${svgEsc(d.date.slice(5))}</text>` : "").join("");
+
+  const grid = (y0,h, qs=[0.25,0.5,0.75]) =>
+    qs.map(q=>`<line x1="${left}" y1="${(y0+h*q).toFixed(1)}" x2="${W-right}" y2="${(y0+h*q).toFixed(1)}" stroke="#e5e7eb" stroke-width="1"/>`).join("");
+
+  const labels = chartData.map((d,i) =>
+    i % 5 === 0 || i === n-1
+      ? `<text x="${x(i).toFixed(1)}" y="${(volTop+volH+22).toFixed(1)}" font-size="16" text-anchor="middle" fill="#4b5563" font-family="Arial">${svgEsc(d.date.slice(5))}</text>`
+      : ""
+  ).join("");
+
+  const num = (v, dec=2) => Number.isFinite(Number(v)) ? Number(v).toLocaleString("en-US",{minimumFractionDigits:dec,maximumFractionDigits:dec}) : "-";
+  const pct = v => Number.isFinite(Number(v)) ? `${Number(v)>=0?"+":""}${Number(v).toFixed(2)}%` : "-";
+  const integer = v => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString("en-US") : "-";
+  const last = chartData.at(-1) || {};
+  const signal = metrics.entryDecision || "-";
+  const score = Number(metrics.pfs ?? 0);
+  const scoreLabel = score >= 85 ? "SANGAT BAIK" : score >= 75 ? "BAIK" : score >= 65 ? "CUKUP" : "LEMAH";
+
+  const card = (x0,y0,w,h,title,rows,accent="#0f3d91") => {
+    const rowH = Math.max(28, (h-42)/Math.max(rows.length,1));
+    return `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+      <text x="${x0+w/2}" y="${y0+27}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="${accent}">${svgEsc(title)}</text>
+      ${rows.map((r,j)=>`<text x="${x0+18}" y="${y0+48+j*rowH}" font-size="17" font-family="Arial" fill="#111827">${svgEsc(r[0])}</text><text x="${x0+w-18}" y="${y0+48+j*rowH}" text-anchor="end" font-size="17" font-family="Arial" font-weight="700" fill="${svgEsc(r[2]||"#111827")}">${svgEsc(r[1])}</text>`).join("")}`;
+  };
+
+  const summaryY = summaryTop;
+  const gap2 = 14, cols = 3, cardW = (W-left-right-gap2*(cols-1))/cols, cardH = 215;
+  const scoreW = cardW;
+  const scoreCard = `<rect x="${left}" y="${summaryY}" width="${scoreW}" height="${cardH}" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/>
+    <text x="${left+scoreW/2}" y="${summaryY+30}" text-anchor="middle" font-size="19" font-family="Arial" font-weight="700" fill="#166534">PFS (PREDICTIVE FILTER SCORE)</text>
+    <text x="${left+scoreW/2}" y="${summaryY+110}" text-anchor="middle" font-size="66" font-family="Arial" font-weight="700" fill="#15803d">${integer(score)}<tspan font-size="30">/100</tspan></text>
+    <rect x="${left+scoreW/2-85}" y="${summaryY+132}" width="170" height="38" rx="8" fill="#15803d"/><text x="${left+scoreW/2}" y="${summaryY+158}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="white">${svgEsc(scoreLabel)}</text>
+    <text x="${left+scoreW/2}" y="${summaryY+192}" text-anchor="middle" font-size="19" font-family="Arial" font-weight="700" fill="#166534">${svgEsc(signal)}</text>`;
+
+  const scoreCards = [
+    ["ENTRY SCORE", `${integer(metrics.entryScore)}/100`, `Grade ${metrics.entryGrade||"-"}`],
+    ["EAS", `${integer(metrics.eas)}/100`, metrics.accumulationStatus || metrics.accumulation || "-"],
+    ["TIMING", `${integer(metrics.timing)}/100`, "TIMING"],
+    ["TREND", `${integer(metrics.trend)}/100`, metrics.trendQuality || "TREND"]
+  ];
+  const smallW = (W-left-right-gap2*4)/5;
+  const scoreRow = scoreCards.map((c,i)=>{
+    const x0=left+scoreW+gap2+i*(smallW+gap2);
+    return `<rect x="${x0}" y="${summaryY}" width="${smallW}" height="${cardH}" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+      <text x="${x0+smallW/2}" y="${summaryY+30}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="#111827">${c[0]}</text>
+      <text x="${x0+smallW/2}" y="${summaryY+102}" text-anchor="middle" font-size="48" font-family="Arial" font-weight="700" fill="#111827">${c[1]}</text>
+      <text x="${x0+smallW/2}" y="${summaryY+145}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="#166534">${svgEsc(c[2])}</text>`;
+  }).join("");
+
+  const row2Y = summaryY + cardH + 16;
+  const row3Y = row2Y + 190 + 16;
+  const row4Y = row3Y + 160 + 16;
+
+  const cards =
+    card(left,row2Y,cardW,190,"MOMENTUM & STRENGTH",[
+      ["RSR 20/60",`${integer(metrics.rsr20)} / ${integer(metrics.rsr60)}`],
+      ["RSI 14",num(metrics.rsi14)],
+      ["WILLIAM %R 14",num(metrics.williamsR14)],
+      ["OBV",num(last.obv)],
+      ["CANDLE",metrics.candle||"-"]
+    ]) +
+    card(left+cardW+gap2,row2Y,cardW,190,"AKUMULASI",[
+      ["Akumulasi 1D",metrics.accumulation||"-"],
+      ["Akumulasi 5D",metrics.accumulation5d||"-"],
+      ["Akumulasi 10D",metrics.accumulation10d||"-"],
+      ["Avg 1D",num(metrics.accumulationAvg1d)],
+      ["Avg 5D / 10D",`${num(metrics.accumulationAvg5d)} / ${num(metrics.accumulationAvg10d)}`]
+    ]) +
+    card(left+2*(cardW+gap2),row2Y,cardW,190,"HARGA & VOLUME",[
+      ["CLOSE",integer(metrics.close)],
+      ["PERUBAHAN",pct(metrics.changePct)],
+      ["VOLUME",num(last.volume,0)],
+      ["VOL / AVG20",num(metrics.volRatio)],
+      ["ATR 14",pct(metrics.atrPct)]
+    ]) +
+    card(left,row3Y,cardW,160,"MOVING AVERAGE",[
+      ["EMA 20",num(last.ema20)],
+      ["EMA 50",num(last.ema50)]
+    ]) +
+    card(left+cardW+gap2,row3Y,cardW,160,"PRICE CHANNEL 10",[
+      ["UPPER",integer(last.priceChannelHigh10)],
+      ["MIDDLE",integer((Number(last.priceChannelHigh10)+Number(last.priceChannelLow10))/2)],
+      ["LOWER",integer(last.priceChannelLow10)]
+    ]) +
+    card(left+2*(cardW+gap2),row3Y,cardW,160,"VOLATILITAS & TREND",[
+      ["Volatilitas",metrics.volatility||"-"],
+      ["Trend",metrics.trendQuality||"-"],
+      ["Trend Score",`${integer(metrics.trend)}/100`]
+    ]) +
+    `<rect x="${left}" y="${row4Y}" width="${W-left-right}" height="115" rx="10" fill="#ffffff" stroke="#d1d5db"/>
+      <text x="${left+180}" y="${row4Y+30}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="#0f3d91">CANDLE & POLA</text>
+      <text x="${left+180}" y="${row4Y+66}" text-anchor="middle" font-size="20" font-family="Arial" font-weight="700" fill="#15803d">${svgEsc(metrics.candle||"-")}</text>
+      <text x="${left+W/2}" y="${row4Y+30}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="#0f3d91">KESIMPULAN</text>
+      <text x="${left+W/2}" y="${row4Y+66}" text-anchor="middle" font-size="18" font-family="Arial" fill="#111827">${svgEsc((metrics.reason||"Trend dan momentum berdasarkan filter PFS").slice(0,110))}</text>
+      <text x="${W-right-180}" y="${row4Y+30}" text-anchor="middle" font-size="18" font-family="Arial" font-weight="700" fill="#0f3d91">REKOMENDASI</text>
+      <text x="${W-right-180}" y="${row4Y+66}" text-anchor="middle" font-size="20" font-family="Arial" font-weight="700" fill="#15803d">${svgEsc(signal)}</text>`;
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-<rect width="100%" height="100%" fill="white"/>
-<text x="${left}" y="28" font-size="22" font-family="Arial" font-weight="700">${svgEsc(ticker)} — 30 Candlestick</text>
-<text x="${left}" y="48" font-size="12" font-family="Arial" fill="#555">EMA20 • EMA50 • Price Channel 10 • RSI14 • MACD Histogram • Volume</text>
-<g stroke="#e5e7eb" stroke-width="1">${[0.25,0.5,0.75].map(q=>`<line x1="${left}" y1="${(top+mainH*q).toFixed(1)}" x2="${W-right}" y2="${(top+mainH*q).toFixed(1)}"/>`).join("")}</g>
-${candle}
-<path d="${line('priceChannelHigh10',py)}" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 4"/>
-<path d="${line('priceChannelLow10',py)}" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 4"/>
-<path d="${line('ema20',py)}" fill="none" stroke="#2563eb" stroke-width="2"/>
-<path d="${line('ema50',py)}" fill="none" stroke="#f59e0b" stroke-width="2"/>
-<text x="${left}" y="${rsiTop-10}" font-size="13" font-family="Arial" font-weight="700">RSI14</text>
-<line x1="${left}" y1="${ry(70)}" x2="${W-right}" y2="${ry(70)}" stroke="#d1d5db" stroke-dasharray="4 4"/>
-<line x1="${left}" y1="${ry(30)}" x2="${W-right}" y2="${ry(30)}" stroke="#d1d5db" stroke-dasharray="4 4"/>
-<path d="${line('rsi14',ry)}" fill="none" stroke="#0891b2" stroke-width="2"/>
-<text x="${left}" y="${macdTop-10}" font-size="13" font-family="Arial" font-weight="700">MACD Histogram</text>
-<line x1="${left}" y1="${my(0)}" x2="${W-right}" y2="${my(0)}" stroke="#9ca3af"/>
-${macdBars}
-<text x="${left}" y="${volTop-10}" font-size="13" font-family="Arial" font-weight="700">Volume</text>
+<rect width="${W}" height="${H}" fill="#f8fafc"/>
+<rect x="18" y="15" width="${W-36}" height="${H-30}" rx="14" fill="white" stroke="#cbd5e1"/>
+<text x="${left}" y="52" font-size="34" font-family="Arial" font-weight="700" fill="#123b8f">${svgEsc(ticker)}</text>
+<text x="${left+155}" y="50" font-size="25" font-family="Arial" font-weight="700" fill="#111827">PFS REALTIME SCREENING</text>
+<rect x="${W-430}" y="28" width="190" height="42" rx="9" fill="#15803d"/>
+<text x="${W-335}" y="57" text-anchor="middle" font-size="20" font-family="Arial" font-weight="700" fill="white">${svgEsc(signal)}</text>
+<text x="${W-215}" y="53" font-size="18" font-family="Arial" fill="#374151">${svgEsc(metrics.dataDate||last.date||"-")} | 1D IDX</text>
+
+<text x="${left}" y="82" font-size="18" font-family="Arial" fill="#111827">
+O ${integer(last.open)}   H ${integer(last.high)}   L ${integer(last.low)}   C ${integer(last.close)}
+<tspan fill="${Number(last.close)>=Number(last.open)?"#15803d":"#dc2626"}">  ${pct(metrics.changePct)}</tspan>
+</text>
+<text x="${W-right}" y="82" text-anchor="end" font-size="18" font-family="Arial" font-weight="700" fill="#111827">30 CANDLE TERAKHIR</text>
+
+${grid(top,priceH)}
+${candles}
+<path d="${line('priceChannelHigh10',py)}" fill="none" stroke="#7c3aed" stroke-width="2"/>
+<path d="${line('priceChannelLow10',py)}" fill="none" stroke="#7c3aed" stroke-width="2"/>
+<path d="${line('ema20',py)}" fill="none" stroke="#2563eb" stroke-width="3"/>
+<path d="${line('ema50',py)}" fill="none" stroke="#f59e0b" stroke-width="3"/>
+<text x="${left+8}" y="${top+24}" font-size="17" font-family="Arial" font-weight="700" fill="#2563eb">EMA20 ${num(last.ema20)}</text>
+<text x="${left+190}" y="${top+24}" font-size="17" font-family="Arial" font-weight="700" fill="#f59e0b">EMA50 ${num(last.ema50)}</text>
+<text x="${left+390}" y="${top+24}" font-size="17" font-family="Arial" font-weight="700" fill="#7c3aed">PRICE CHANNEL 10</text>
 ${volumes}
+
+<line x1="${left}" y1="${ry(70)}" x2="${W-right}" y2="${ry(70)}" stroke="#c4b5fd" stroke-dasharray="6 5"/>
+<line x1="${left}" y1="${ry(30)}" x2="${W-right}" y2="${ry(30)}" stroke="#c4b5fd" stroke-dasharray="6 5"/>
+<path d="${line('rsi14',ry)}" fill="none" stroke="#7c3aed" stroke-width="3"/>
+<text x="${left+10}" y="${rsiTop+25}" font-size="18" font-family="Arial" font-weight="700">RSI 14 <tspan fill="#7c3aed">${num(last.rsi14)}</tspan></text>
+
+${grid(obvTop,obvH)}
+<path d="${line('obv',oy)}" fill="none" stroke="#2563eb" stroke-width="3"/>
+<text x="${left+10}" y="${obvTop+25}" font-size="18" font-family="Arial" font-weight="700">OBV <tspan fill="#2563eb">${num(last.obv)}</tspan></text>
+
+<line x1="${left}" y1="${wrY(-20)}" x2="${W-right}" y2="${wrY(-20)}" stroke="#c4b5fd" stroke-dasharray="6 5"/>
+<line x1="${left}" y1="${wrY(-80)}" x2="${W-right}" y2="${wrY(-80)}" stroke="#c4b5fd" stroke-dasharray="6 5"/>
+<path d="${line('williamsR14',wrY)}" fill="none" stroke="#7c3aed" stroke-width="3"/>
+<text x="${left+10}" y="${wrTop+25}" font-size="18" font-family="Arial" font-weight="700">WILLIAMS %R 14 <tspan fill="#7c3aed">${num(last.williamsR14)}</tspan></text>
+
+<text x="${left+10}" y="${volTop+25}" font-size="18" font-family="Arial" font-weight="700">VOLUME <tspan fill="#15803d">${num(last.volume,0)}</tspan></text>
 ${labels}
+
+${scoreCard}${scoreRow}
+${cards}
+<text x="${left}" y="${H-15}" font-size="15" font-family="Arial" fill="#64748b">Data diambil saat screening • 30 candle • EMA20/EMA50 • Price Channel 10 • RSI14 • OBV • Williams %R 14 • Volume</text>
 </svg>`;
 }
 
+async function convertSvgToPng(svg, pngFile) {
+  const svgFile = `${pngFile}.tmp.svg`;
+  await fs.writeFile(svgFile, svg, "utf8");
+  const attempts = [
+    ["rsvg-convert", ["-w", "1600", "-o", pngFile, svgFile]],
+    ["magick", ["-background", "white", svgFile, pngFile]],
+    ["convert", ["-background", "white", svgFile, pngFile]],
+  ];
+  for (const [cmd, args] of attempts) {
+    try {
+      await execFileAsync(cmd, args);
+      const stat = await fs.stat(pngFile);
+      if (stat.size > 1000) {
+        await fs.unlink(svgFile).catch(()=>{});
+        return pngFile;
+      }
+    } catch (_) {}
+  }
+  try {
+    const sharp = await import("sharp");
+    await sharp.default(Buffer.from(svg)).png().toFile(pngFile);
+    await fs.unlink(svgFile).catch(()=>{});
+    return pngFile;
+  } catch (_) {
+    await fs.unlink(svgFile).catch(()=>{});
+    throw new Error("Tidak ada renderer PNG. Install rsvg-convert/ImageMagick atau npm install sharp.");
+  }
+}
 
 async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
   if (!Array.isArray(chartData) || !chartData.length) return null;
-
-  const labels = chartData.map(d => d.date);
-  const candleData = chartData.map(d => ({
-    x: d.date,
-    o: Number(d.open),
-    h: Number(d.high),
-    l: Number(d.low),
-    c: Number(d.close),
-  }));
-  const lineData = (key, axis = 'yPrice') => chartData.map(d => ({ x: d.date, y: Number(d[key]) }));
-
-  const caption = [
-    `PFS ${Number(metrics.pfs ?? 0)}/100`,
-    `ENTRY ${metrics.entryDecision || '-'} ${metrics.entryGrade || ''}`,
-    `EAS ${Number(metrics.eas ?? 0)}/100`,
-    `TIMING ${Number(metrics.timing ?? 0)}/100`,
-    `TREND ${Number(metrics.trend ?? 0)}/100`,
-    `RSR20 ${Number(metrics.rsr20 ?? 0)}`,
-    `RSI14 ${Number(metrics.rsi ?? 0).toFixed(1)}`,
-    `MACD ${Number(metrics.macdHist ?? 0).toFixed(2)}`,
-    `VOL ${Number(metrics.volRatio ?? 0).toFixed(2)}x`,
-    `ATR ${Number(metrics.atrPct ?? 0).toFixed(2)}%`,
-    `AKUM ${metrics.accumulation || '-'} / 5D ${metrics.accumulation5d || '-'} / 10D ${metrics.accumulation10d || '-'}`,
-    `CLOSE ${formatPrice(metrics.close)} (${Number(metrics.changePct || 0) >= 0 ? '+' : ''}${Number(metrics.changePct || 0).toFixed(2)}%)`,
-    `DATA ${metrics.dataDate || '-'}`
-  ].join(' | ');
-
-  const chartConfig = {
-    type: 'candlestick',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Harga', data: candleData, yAxisID: 'yPrice', color: { up: '#16a34a', down: '#ef4444', unchanged: '#6b7280' } },
-        { type: 'line', label: 'EMA20', data: lineData('ema20'), yAxisID: 'yPrice', borderColor: '#2563eb', borderWidth: 2, pointRadius: 0 },
-        { type: 'line', label: 'EMA50', data: lineData('ema50'), yAxisID: 'yPrice', borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0 },
-        { type: 'line', label: 'PC High10', data: lineData('priceChannelHigh10'), yAxisID: 'yPrice', borderColor: '#7c3aed', borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
-        { type: 'line', label: 'PC Low10', data: lineData('priceChannelLow10'), yAxisID: 'yPrice', borderColor: '#7c3aed', borderWidth: 1, borderDash: [5,4], pointRadius: 0 },
-        { type: 'line', label: 'RSI14', data: lineData('rsi14'), yAxisID: 'yRsi', borderColor: '#0891b2', borderWidth: 2, pointRadius: 0 },
-        { type: 'bar', label: 'MACD Hist', data: lineData('macdHist'), yAxisID: 'yMacd', backgroundColor: chartData.map(d => Number(d.macdHist) >= 0 ? '#16a34a' : '#ef4444'), barPercentage: 0.7 },
-        { type: 'bar', label: 'Volume', data: lineData('volume'), yAxisID: 'yVol', backgroundColor: chartData.map(d => Number(d.close) >= Number(d.open) ? 'rgba(22,163,74,0.35)' : 'rgba(239,68,68,0.35)'), barPercentage: 0.7 },
-      ]
-    },
-    options: {
-      responsive: false,
-      animation: false,
-      plugins: {
-        legend: { display: true, position: 'top' },
-        title: { display: true, text: [`${ticker} — REALTIME SCREENING`, caption], font: { size: 16, weight: 'bold' }, padding: 12 }
-      },
-      scales: {
-        x: { type: 'category', ticks: { maxTicksLimit: 8, autoSkip: true } },
-        yPrice: { type: 'linear', position: 'left', title: { display: true, text: 'Harga' } },
-        yRsi: { type: 'linear', position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: 'RSI14' } },
-        yMacd: { type: 'linear', position: 'right', display: false, grid: { drawOnChartArea: false } },
-        yVol: { type: 'linear', position: 'right', display: false, grid: { drawOnChartArea: false } }
-      }
-    }
-  };
-
-  const response = await fetch('https://quickchart.io/chart', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      version: '4', width: 1400, height: 900, devicePixelRatio: 1,
-      format: 'png', backgroundColor: 'white', chart: chartConfig
-    })
-  });
-  if (!response.ok) throw new Error(`QuickChart HTTP ${response.status}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!buffer.length) throw new Error('QuickChart mengembalikan gambar kosong.');
-  return buffer;
+  const svg = makeStockChartSVG(ticker, chartData, metrics);
+  const safe = String(ticker).replace(/[^A-Za-z0-9_-]/g, "_");
+  const pngFile = `output/charts/${safe}_TELEGRAM.png`;
+  await convertSvgToPng(svg, pngFile);
+  return await fs.readFile(pngFile);
 }
 
 async function sendTelegramPhoto(chatId, imageBuffer, caption = '') {
@@ -1061,14 +1172,13 @@ function telegramStockCaption(r) {
   return [
     `📊 ${r.ticker} | PFS REALTIME`,
     `PFS ${fmtTelegramInt(r.score)}/100 | ${r.signal || '-'}`,
-    `🎯 ENTRY ${fmtTelegramInt(r.entryScore)}/100 | ${r.entryDecision || '-'} | Grade ${r.entryGrade || '-'}`,
-    `⏱ Timing ${fmtTelegramInt(r.timingScore)} | 📈 Trend ${fmtTelegramInt(r.trendScore)} | EAS ${fmtTelegramInt(r.earlyAccumulationScore)}`,
-    `RSR20 ${fmtTelegramInt(r.rsr20)} | RSI14 ${fmtTelegramNum(r.rsi14)} | MACD ${fmtTelegramNum(r.macdHist)}`,
-    `VOL/AVG20 ${fmtTelegramNum(r.volRatio)}x | ATR14 ${fmtTelegramPct(r.atrPct)} | Volatilitas ${r.volatility || '-'}`,
-    `Akum ${r.accumulation || '-'} | 5D ${r.accumulation5d || '-'} | 10D ${r.accumulation10d || '-'}`,
-    `Close ${fmtTelegramNum(r.close, 0)} | Chg ${fmtTelegramPct(r.changePct)} | Trend ${r.trendQuality || '-'}`,
-    `🕯 30 CANDLE + EMA20/50 + PC10 + RSI14 + MACD + VOLUME`,
-    `🕒 Data: ${r.dataDate || '-'} | chart dibuat saat screening`
+    `ENTRY ${fmtTelegramInt(r.entryScore)}/100 | ${r.entryDecision || '-'} | Grade ${r.entryGrade || '-'}`,
+    `EAS ${fmtTelegramInt(r.earlyAccumulationScore)} | Timing ${fmtTelegramInt(r.timingScore)} | Trend ${fmtTelegramInt(r.trendScore)}`,
+    `RSI14 ${fmtTelegramNum(r.rsi14)} | OBV ${fmtTelegramNum(r.obv)} | W%R14 ${fmtTelegramNum(r.williamsR14)}`,
+    `EMA20 ${fmtTelegramNum(r.ema20)} | EMA50 ${fmtTelegramNum(r.ema50)} | Vol/Avg20 ${fmtTelegramNum(r.volRatio)}x`,
+    `Akum 1D ${r.accumulation||'-'} | 5D ${r.accumulation5d||'-'} | 10D ${r.accumulation10d||'-'}`,
+    `Close ${fmtTelegramNum(r.close,0)} | Chg ${fmtTelegramPct(r.changePct)} | ${r.trendQuality||'-'}`,
+    `🖼 Chart 30 candle: EMA20/50 + PC10 + RSI14 + OBV + Williams %R14 + Volume`
   ].join('\n');
 }
 
@@ -2132,6 +2242,8 @@ async function main() {
         ema20: calc.latest.ema20,
         ema50: s.ema50,
         macdHist: calc.latest.macdHist,
+        obv: calculateChartData(stock, 1).at(-1)?.obv ?? 0,
+        williamsR14: calculateChartData(stock, 1).at(-1)?.williamsR14 ?? null,
         volRatio: s.volRatio,
         atrPct: s.atrPct,
         volatility10Pct: s.volatility10Pct,
@@ -2200,7 +2312,7 @@ async function main() {
     r.rank = i + 1;
   });
 
-  // V66.3 REALTIME TELEGRAM CHART: hanya saham LOLOS yang dibuatkan chart.
+  // V66.4 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
   // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
   // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });
@@ -2213,10 +2325,13 @@ async function main() {
     try {
       r.telegramChartPng = await renderTelegramChartPNG(r.ticker, r.chart30, {
         pfs: r.score, entryScore: r.entryScore, entryDecision: r.entryDecision, entryGrade: r.entryGrade,
-        eas: r.earlyAccumulationScore, timing: r.timingScore, trend: r.trendScore, rsr20: r.rsr20,
-        rsi: r.rsi14, macdHist: r.macdHist, volRatio: r.volRatio, atrPct: r.atrPct,
+        eas: r.earlyAccumulationScore, timing: r.timingScore, trend: r.trendScore, rsr20: r.rsr20, rsr60: r.rsr60,
+        rsi14: r.rsi14, macdHist: r.macdHist, volRatio: r.volRatio, atrPct: r.atrPct,
         accumulation: r.accumulation, accumulation5d: r.accumulation5d, accumulation10d: r.accumulation10d,
-        close: r.close, changePct: r.changePct, dataDate: r.dataDate
+        accumulationAvg1d: r.accumulationAvg1d, accumulationAvg5d: r.accumulationAvg5d, accumulationAvg10d: r.accumulationAvg10d,
+        close: r.close, changePct: r.changePct, dataDate: r.dataDate, trendQuality: r.trendQuality,
+        volatility: r.volatility, candle: r.candle, reason: r.reason,
+        williamsR14: r.williamsR14, obv: r.obv
       });
       const pngFile = `output/charts/${safeTicker}_REALTIME.png`;
       await fs.writeFile(pngFile, r.telegramChartPng);

@@ -297,6 +297,8 @@ function calcAccumulationPeriod(stock, days) {
   };
 }
 
+// Harga beli rata-rata akumulasi = volume-weighted typical price ((High+Low+Close)/3)
+// dari candle pada periode 1D/5D/10D. Ini bukan data broker summary.
 function accumulationAverage(stock, days) {
   const n = stock.length;
   if (n < 1) return null;
@@ -1032,12 +1034,12 @@ function makeStockChartSVG(ticker, chartData, metrics = {}) {
       ["OBV",num(last.obv)],
       ["CANDLE",metrics.candle||"-"]
     ]) +
-    card(left+cardW+gap2,row2Y,cardW,190,"AKUMULASI",[
-      ["Akumulasi 1D",metrics.accumulation||"-"],
-      ["Akumulasi 5D",metrics.accumulation5d||"-"],
-      ["Akumulasi 10D",metrics.accumulation10d||"-"],
-      ["Avg 1D",num(metrics.accumulationAvg1d)],
-      ["Avg 5D / 10D",`${num(metrics.accumulationAvg5d)} / ${num(metrics.accumulationAvg10d)}`]
+    card(left+cardW+gap2,row2Y,cardW,190,"AKUMULASI & HARGA BELI",[
+      ["Akum 1D",`${metrics.accumulation||"-"} | Beli ${num(metrics.accumulationAvg1d)}`],
+      ["Akum 5D",`${metrics.accumulation5d||"-"} | Beli ${num(metrics.accumulationAvg5d)}`],
+      ["Akum 10D",`${metrics.accumulation10d||"-"} | Beli ${num(metrics.accumulationAvg10d)}`],
+      ["Harga beli 1D",num(metrics.accumulationAvg1d)],
+      ["Harga beli 5D / 10D",`${num(metrics.accumulationAvg5d)} / ${num(metrics.accumulationAvg10d)}`]
     ]) +
     card(left+2*(cardW+gap2),row2Y,cardW,190,"HARGA & VOLUME",[
       ["CLOSE",integer(metrics.close)],
@@ -2542,7 +2544,7 @@ async function main() {
     r.rank = i + 1;
   });
 
-  // V66.6 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
+  // V66.8 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
   // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
   // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });

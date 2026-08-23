@@ -1035,11 +1035,11 @@ function makeStockChartSVG(ticker, chartData, metrics = {}) {
       ["CANDLE",metrics.candle||"-"]
     ]) +
     card(left+cardW+gap2,row2Y,cardW,190,"AKUMULASI & HARGA BELI",[
-      ["Akum 1D",`${metrics.accumulation||"-"} | Beli ${num(metrics.accumulationAvg1d)}`],
-      ["Akum 5D",`${metrics.accumulation5d||"-"} | Beli ${num(metrics.accumulationAvg5d)}`],
-      ["Akum 10D",`${metrics.accumulation10d||"-"} | Beli ${num(metrics.accumulationAvg10d)}`],
-      ["Harga beli 1D",num(metrics.accumulationAvg1d)],
-      ["Harga beli 5D / 10D",`${num(metrics.accumulationAvg5d)} / ${num(metrics.accumulationAvg10d)}`]
+      ["Akum 1D",`${metrics.accumulation||"-"} | Avg Beli ${num(metrics.accumulationAvg1d)}`],
+      ["Akum 5D",`${metrics.accumulation5d||"-"} | Avg Beli ${num(metrics.accumulationAvg5d)}`],
+      ["Akum 10D",`${metrics.accumulation10d||"-"} | Avg Beli ${num(metrics.accumulationAvg10d)}`],
+      ["Avg Beli 1D",num(metrics.accumulationAvg1d)],
+      ["Avg Beli 5D / 10D",`${num(metrics.accumulationAvg5d)} / ${num(metrics.accumulationAvg10d)}`]
     ]) +
     card(left+2*(cardW+gap2),row2Y,cardW,190,"HARGA & VOLUME",[
       ["CLOSE",integer(metrics.close)],
@@ -1307,9 +1307,9 @@ function metricsPanelSVG(ticker, metrics) {
     ["TIMING", `${integer(metrics.timing)}/100`, scoreLabel(metrics.timing,75,55), bandScore(metrics.timing,75,55)],
     ["TREND", `${integer(metrics.trend)}/100`, esc(metrics.trendQuality || scoreLabel(metrics.trend,80,60)), bandScore(metrics.trend,80,60)],
     ["RSR20 / 60", `${integer(metrics.rsr20)} / ${integer(metrics.rsr60)}`, Number(metrics.rsr20)>=70 ? "KUAT" : Number(metrics.rsr20)>=60 ? "SEDANG" : "LEMAH", bandScore(metrics.rsr20,70,60)],
-    ["AKUMULASI 1D", esc(metrics.accumulation), `Score ${integer(metrics.accumulationScore)}`, bandScore(metrics.accumulationScore,75,55)],
-    ["AKUMULASI 5D", esc(metrics.accumulation5d), `Score ${integer(metrics.accumulation5dScore)}`, bandScore(metrics.accumulation5dScore,75,55)],
-    ["AKUMULASI 10D", esc(metrics.accumulation10d), `Score ${integer(metrics.accumulation10dScore)}`, bandScore(metrics.accumulation10dScore,75,55)],
+    ["AKUMULASI 1D", esc(metrics.accumulation || "-"), `Avg Beli ${num(metrics.accumulationAvg1d)} · Score ${integer(metrics.accumulationScore)}`, bandScore(metrics.accumulationScore,75,55)],
+    ["AKUMULASI 5D", esc(metrics.accumulation5d || "-"), `Avg Beli ${num(metrics.accumulationAvg5d)} · Score ${integer(metrics.accumulation5dScore)}`, bandScore(metrics.accumulation5dScore,75,55)],
+    ["AKUMULASI 10D", esc(metrics.accumulation10d || "-"), `Avg Beli ${num(metrics.accumulationAvg10d)} · Score ${integer(metrics.accumulation10dScore)}`, bandScore(metrics.accumulation10dScore,75,55)],
     ["VOLATILITAS", esc(metrics.volatility), `${num(metrics.atrPct)}% ATR14`, bandLabel(metrics.volatility)],
     ["RSI14", num(metrics.rsi14), Number(metrics.rsi14)>=50 && Number(metrics.rsi14)<=70 ? "SEHAT" : Number(metrics.rsi14)>=45 ? "SEDANG" : "LEMAH", bandRSI(metrics.rsi14)],
     ["MACD", num(metrics.macdHist), Number(metrics.macdHist)>0 ? "POSITIF" : Number(metrics.macdHist)>=-0.01 ? "NETRAL" : "NEGATIF", bandMACD(metrics.macdHist)],
@@ -1333,7 +1333,7 @@ function metricsPanelSVG(ticker, metrics) {
     return `<rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="${c.bg}" stroke="${c.border}" stroke-width="2"/>
       <text x="${x+16}" y="${y+23}" font-family="Arial" font-size="16" font-weight="700" fill="#374151">${title}</text>
       <text x="${x+16}" y="${y+53}" font-family="Arial" font-size="25" font-weight="700" fill="${c.fg}">${value}</text>
-      <text x="${x+cardW-16}" y="${y+53}" text-anchor="end" font-family="Arial" font-size="15" font-weight="700" fill="${c.fg}">${sub}</text>`;
+      <text x="${x+cardW-16}" y="${y+53}" text-anchor="end" font-family="Arial" font-size="13" font-weight="700" fill="${c.fg}">${sub}</text>`;
   };
 
   const legendY = 438;
@@ -1351,6 +1351,10 @@ function metricsPanelSVG(ticker, metrics) {
 
 async function renderTelegramChartPNG(ticker, chartData, metrics = {}) {
   if (!Array.isArray(chartData) || chartData.length < 5) return null;
+  // V66.9: pastikan nilai rata-rata pembelian akumulasi tersedia di panel Telegram.
+  if (!Number.isFinite(Number(metrics.accumulationAvg1d))) metrics.accumulationAvg1d = accumulationAverage(chartData, 1);
+  if (!Number.isFinite(Number(metrics.accumulationAvg5d))) metrics.accumulationAvg5d = accumulationAverage(chartData, 5);
+  if (!Number.isFinite(Number(metrics.accumulationAvg10d))) metrics.accumulationAvg10d = accumulationAverage(chartData, 10);
   const sharp = await ensureSharp();
   const main = await quickChartPNG(quickChartMainConfig(ticker, chartData), 1600, 760);
   const osc = await quickChartPNG(quickChartOscConfig(ticker, chartData), 1600, 470);
@@ -2544,7 +2548,7 @@ async function main() {
     r.rank = i + 1;
   });
 
-  // V66.8 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
+  // V66.9 REALTIME TELEGRAM DASHBOARD CHART: hanya saham LOLOS yang dibuatkan chart.
   // Chart dibuat setelah filter final sehingga data/indikator sama persis dengan hasil Telegram.
   // 30 candle + EMA20/EMA50 + Price Channel 10 + RSI14 + MACD Histogram + Volume + PFS metrics.
   await fs.mkdir("output/charts", { recursive: true });
@@ -2721,7 +2725,7 @@ ${photoError.message}`
   console.log(`Selesai. Dicek: ${symbols.length}`);
   console.log(`Berhasil: ${results.length}`);
   console.log(`STRICT LOLOS: ${qualified.length} | Ditolak filter: ${rejectedByStrictFilter}`);
-  console.log(`CHART: ${qualified.length} dashboard PNG (30 candle + EMA20 + EMA50 + PC10 + RSI14 + OBV + Williams %R14 + Volume)`);
+  console.log(`CHART: ${qualified.length} dashboard PNG (50 candle + EMA20 + EMA50 + PC10 + RSI14 + OBV + Williams %R14 + Volume + Avg Beli Akumulasi 1D/5D/10D)`);
   console.log(`Error: ${errors.length}`);
   if (shouldRunBacktest && backtest) {
     console.log(`BACKTEST MERAH < -1%: ${backtest.criteria["MERAH: Close < -1%"].tp1WinRate.toFixed(1)}%`);

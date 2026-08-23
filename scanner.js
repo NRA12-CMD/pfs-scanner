@@ -1443,6 +1443,17 @@ function metricsPanelSVG(ticker, metrics) {
     const x = margin + col * (cardW + gap);
     const y = startY + row * (cardH + gap);
     const [title, value, sub, c] = item;
+    const special = title === "ENTRY MODE" || title === "ENTRY LEVEL";
+    if (special) {
+      // V66.12 FIX: jangan menaruh value dan sub pada baris yang sama.
+      // Label ENTRY MODE/LEVEL bisa panjang sehingga sebelumnya saling menimpa.
+      const safeValue = String(value || "-");
+      const safeSub = String(sub || "-");
+      return `<rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="${c.bg}" stroke="${c.border}" stroke-width="2"/>
+        <text x="${x+16}" y="${y+22}" font-family="Arial" font-size="16" font-weight="700" fill="#374151">${title}</text>
+        <text x="${x+16}" y="${y+51}" font-family="Arial" font-size="19" font-weight="700" fill="${c.fg}">${safeValue}</text>
+        <text x="${x+16}" y="${y+75}" font-family="Arial" font-size="11" font-weight="600" fill="${c.fg}">${safeSub}</text>`;
+    }
     return `<rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="10" fill="${c.bg}" stroke="${c.border}" stroke-width="2"/>
       <text x="${x+16}" y="${y+23}" font-family="Arial" font-size="16" font-weight="700" fill="#374151">${title}</text>
       <text x="${x+16}" y="${y+53}" font-family="Arial" font-size="25" font-weight="700" fill="${c.fg}">${value}</text>
